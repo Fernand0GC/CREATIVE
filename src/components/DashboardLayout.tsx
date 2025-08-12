@@ -1,49 +1,34 @@
-import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
-import { AppSidebar } from "@/components/AppSidebar";
-import { Button } from "@/components/ui/button";
-import { Bell, Search } from "lucide-react";
-import { Input } from "@/components/ui/input";
+import type React from "react"
+import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
+import { AppSidebar } from "@/components/AppSidebar"
+import { Button } from "@/components/ui/button"
+import { Bell, Search } from "lucide-react"
+import { Input } from "@/components/ui/input"
 
 interface DashboardLayoutProps {
-  children: React.ReactNode;
+  children: React.ReactNode
 }
 
 const DashboardLayout: React.FC<DashboardLayoutProps> = ({ children }) => {
   return (
     <SidebarProvider>
-      <div className="min-h-screen flex w-full bg-background">
+      <div className="min-h-screen flex w-full bg-slate-50">
         <AppSidebar />
-        
-        <div className="flex-1 flex flex-col">
-          {/* Header */}
-          <header className="h-16 border-b bg-card/50 backdrop-blur-sm flex items-center px-4 gap-4">
-            <SidebarTrigger className="hover:bg-muted/50" />
-            
-            <div className="flex-1 flex items-center gap-4">
-              <div className="relative max-w-sm flex-1">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input
-                  placeholder="Buscar..."
-                  className="pl-10 bg-background/50 border-muted"
-                />
-              </div>
-            </div>
 
-            <div className="flex items-center gap-2">
-              <Button variant="ghost" size="icon" className="hover:bg-muted/50">
-                <Bell className="h-5 w-5" />
-              </Button>
-            </div>
+        <div className="flex-1 flex flex-col">
+          <header className="h-16 border-b border-slate-200 bg-white shadow-sm flex items-center px-6 gap-4">
+            <SidebarTrigger className="hover:bg-blue-50 hover:text-blue-600 rounded-lg p-2 transition-colors" />
+
+
+
+
           </header>
 
-          {/* Main Content */}
-          <main className="flex-1 p-6 bg-gradient-subtle">
-            {children}
-          </main>
+          <main className="flex-1 p-6 bg-gradient-to-br from-slate-50 to-blue-50/30">{children}</main>
         </div>
       </div>
     </SidebarProvider>
-  );
-};
+  )
+}
 
-export default DashboardLayout;
+export default DashboardLayout
