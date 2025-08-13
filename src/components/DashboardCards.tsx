@@ -1,20 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { TrendingUp, Clock, AlertCircle, DollarSign } from "lucide-react";
+import { TrendingUp, Clock, AlertCircle } from "lucide-react";
 import { useOrders } from "@/hooks/useOrders";
 import { usePayments } from "@/hooks/usePayments";
 
 // Helper: normaliza Firestore Timestamp | string | Date -> Date | null
 const toDate = (v: any): Date | null => {
   if (!v) return null;
-  // Firestore Timestamp
   if (v?.toDate && typeof v.toDate === "function") return v.toDate();
-  // ISO string o número
   const d = new Date(v);
   return isNaN(d.getTime()) ? null : d;
 };
 
-// Helper: compara solo por día (UTC limpio o local, aquí usamos local)
+// Helper: compara solo por día
 const isSameDay = (a: Date, b: Date) => {
   return (
     a.getFullYear() === b.getFullYear() &&
@@ -34,22 +32,22 @@ const DashboardCards = () => {
   const stats = useMemo(() => {
     const today = new Date();
 
-    // ===== Ingresos del día (usar payments de HOY) =====
+    // Ingresos del día
     const todaysPayments = payments.filter((p) => {
       const d = toDate(p.createdAt);
       return d ? isSameDay(d, today) : false;
     });
     const dailyIncome = todaysPayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
 
-    // ===== Trabajos pendientes (desde órdenes) =====
+    // Trabajos pendientes
     const pendingOrders = orders.filter((o) => o.status === "pendiente").length;
 
-    // ===== Total de pagos pendientes (sumar balances > 0) =====
+    // Pagos pendientes
     const pendingPayments = orders
       .filter((o) => o.status === "pendiente" && Number(o.balance) > 0)
       .reduce((sum, o) => sum + Number(o.balance || 0), 0);
 
-    // ===== Crecimiento mensual (pagos del mes vs mes anterior) =====
+    // Crecimiento mensual
     const now = new Date();
     const curMonth = now.getMonth();
     const curYear = now.getFullYear();
@@ -89,7 +87,8 @@ const DashboardCards = () => {
       title: "Ingresos del día",
       value: `Bs. ${stats.dailyIncome.toFixed(2)}`,
       change: "Total de hoy",
-      icon: DollarSign,
+      icon: null,
+      customText: "Bs",
       color: "text-emerald-600",
       bgColor: "bg-emerald-50",
       borderColor: "border-emerald-200",
@@ -99,6 +98,7 @@ const DashboardCards = () => {
       value: String(stats.pendingOrders),
       change: "Por completar",
       icon: Clock,
+      customText: null,
       color: "text-amber-600",
       bgColor: "bg-amber-50",
       borderColor: "border-amber-200",
@@ -108,6 +108,7 @@ const DashboardCards = () => {
       value: `Bs. ${stats.pendingPayments.toFixed(2)}`,
       change: `${stats.pendingCount} órdenes`,
       icon: AlertCircle,
+      customText: null,
       color: "text-rose-600",
       bgColor: "bg-rose-50",
       borderColor: "border-rose-200",
@@ -117,6 +118,7 @@ const DashboardCards = () => {
       value: `${stats.monthlyGrowth.toFixed(1)}%`,
       change: "vs mes anterior",
       icon: TrendingUp,
+      customText: null,
       color: "text-blue-600",
       bgColor: "bg-blue-50",
       borderColor: "border-blue-200",
@@ -134,8 +136,14 @@ const DashboardCards = () => {
             <CardTitle className="text-sm font-semibold text-slate-600">
               {card.title}
             </CardTitle>
-            <div className={`p-3 rounded-xl ${card.bgColor} shadow-sm border ${card.borderColor}`}>
-              <card.icon className={`h-5 w-5 ${card.color}`} />
+            <div
+              className={`p-3 rounded-xl ${card.bgColor} shadow-sm border ${card.borderColor} flex items-center justify-center`}
+            >
+              {card.customText ? (
+                <span className={`font-bold ${card.color}`}>{card.customText}</span>
+              ) : (
+                <card.icon className={`h-5 w-5 ${card.color}`} />
+              )}
             </div>
           </CardHeader>
           <CardContent>

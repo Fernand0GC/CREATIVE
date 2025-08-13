@@ -1,3 +1,4 @@
+// src/App.tsx
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -17,35 +18,36 @@ import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
 
-// Protected Route Component
+// Loader simple reutilizable
+const LoadingScreen = ({ label = "Cargando..." }: { label?: string }) => (
+  <div className="min-h-screen flex items-center justify-center bg-gradient-subtle">
+    <div className="text-center">
+      <div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+      <p className="text-muted-foreground">{label}</p>
+    </div>
+  </div>
+);
+
+// Protected Route: requiere sesión
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   const { user, loading } = useAuth();
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-subtle">
-        <div className="text-center">
-          <div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-          <p className="text-muted-foreground">Cargando...</p>
-        </div>
-      </div>
-    );
-  }
+  if (loading) return <LoadingScreen label="Verificando sesión..." />;
 
-  return user ? (
-    <DashboardLayout>{children}</DashboardLayout>
-  ) : (
-    <LoginScreen />
-  );
+  return user ? <DashboardLayout>{children}</DashboardLayout> : <LoginScreen />;
 };
 
-// Admin Route Component
+// Admin Route: requiere rol admin
 const AdminRoute = ({ children }: { children: React.ReactNode }) => {
-  const { user } = useAuth();
-  
-  if (!user?.isAdmin) {
-    return <Navigate to="/" replace />;
-  }
+  const { user, loading } = useAuth();
+  console.log("AdminRoute user:", user);
+  if (loading) return <LoadingScreen label="Verificando permisos..." />;
+
+  // Compatibilidad: usa user.role === 'admin' (nuevo) o user.isAdmin (anterior)
+  const isAdmin =
+    (user as any)?.role === "admin" || (user as any)?.isAdmin === true;
+
+  if (!isAdmin) return <Navigate to="/orders" replace />;
 
   return <>{children}</>;
 };
@@ -58,43 +60,81 @@ const App = () => (
       <AuthProvider>
         <BrowserRouter>
           <Routes>
-            <Route path="/" element={
-              <ProtectedRoute>
-                <Dashboard />
-              </ProtectedRoute>
-            } />
-            <Route path="/orders" element={
-              <ProtectedRoute>
-                <Orders />
-              </ProtectedRoute>
-            } />
-            <Route path="/payments" element={
-              <ProtectedRoute>
-                <Payments />
-              </ProtectedRoute>
-            } />
-            <Route path="/journal" element={
-              <ProtectedRoute>
-                <Journal />
-              </ProtectedRoute>
-            } />
-            <Route path="/reports" element={
-              <ProtectedRoute>
-                <Reports />
-              </ProtectedRoute>
-            } />
-            <Route path="/services" element={
-              <ProtectedRoute>
-                <Services />
-              </ProtectedRoute>
-            } />
-            <Route path="/users" element={
-              <ProtectedRoute>
-                <AdminRoute>
-                  <Users />
-                </AdminRoute>
-              </ProtectedRoute>
-            } />
+            {/* Inicio: si hay sesión, cae en Dashboard (solo admin); si no, Login via ProtectedRoute */}
+            <Route
+              path="/"
+              element={
+                <ProtectedRoute>
+                  <AdminRoute>
+                    <Dashboard />
+                  </AdminRoute>
+                </ProtectedRoute>
+              }
+            />
+
+            {/* Órdenes: accesible para admin y empleado */}
+            <Route
+              path="/orders"
+              element={
+                <ProtectedRoute>
+                  <Orders />
+                </ProtectedRoute>
+              }
+            />
+
+            {/* Rutas SOLO admin */}
+            <Route
+              path="/payments"
+              element={
+                <ProtectedRoute>
+                  <AdminRoute>
+                    <Payments />
+                  </AdminRoute>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/journal"
+              element={
+                <ProtectedRoute>
+                  <AdminRoute>
+                    <Journal />
+                  </AdminRoute>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/reports"
+              element={
+                <ProtectedRoute>
+                  <AdminRoute>
+                    <Reports />
+                  </AdminRoute>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/services"
+              element={
+                <ProtectedRoute>
+                  <AdminRoute>
+                    <Services />
+                  </AdminRoute>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/users"
+              element={
+                <ProtectedRoute>
+                  <AdminRoute>
+                    <Users />
+                  </AdminRoute>
+                </ProtectedRoute>
+              }
+            />
+
+            {/* 404 */}
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>

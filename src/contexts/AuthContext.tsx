@@ -1,101 +1,129 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { auth } from '@/firebase';
-import { GoogleAuthProvider, signInWithPopup, signOut as firebaseSignOut, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
+// src/contexts/AuthContext.tsx
+import React, { createContext, useContext, useEffect, useState } from "react";
+import { auth, db } from "@/firebase"; // <-- asegúrate de exportar db (getFirestore) en tu setup
+import {
+  GoogleAuthProvider,
+  onAuthStateChanged,
+  signInWithPopup,
+  signOut as fbSignOut,
+} from "firebase/auth";
+import { doc, getDoc } from "firebase/firestore";
+
+type Role = "admin" | "employee";
+type AccessDoc = { email: string; role: Role; active?: boolean; displayName?: string };
 
 interface User {
   id: string;
   name: string;
   email: string;
   picture: string;
-  isAdmin?: boolean;
+  role: Role;
 }
 
-interface AuthContextType {
+interface AuthCtx {
   user: User | null;
   loading: boolean;
-  signIn: () => void;
-  signOut: () => void;
+  signIn: () => Promise<void>;
+  signOut: () => Promise<void>;
 }
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
-
+const Ctx = createContext<AuthCtx | undefined>(undefined);
 export const useAuth = () => {
-  const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
-  return context;
+  const c = useContext(Ctx);
+  if (!c) throw new Error("useAuth must be used within AuthProvider");
+  return c;
 };
 
-const AUTHORIZED_EMAILS = [
-  'admin1@tudominio.com',
-  'admin2@tudominio.com'
-];
+// Configuración
+const ACL_COLLECTION = "access";
+// Cambia por la URL a donde quieres expulsar a los no autorizados
+const NO_ACCESS_URL = "/";
+
+const emailId = (email?: string | null) => (email || "").trim().toLowerCase();
+
+async function fetchAccess(email: string): Promise<AccessDoc | null> {
+  if (!email) return null;
+  const ref = doc(db, ACL_COLLECTION, emailId(email));
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return null;
+  return snap.data() as AccessDoc;
+}
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // Construye el User del contexto si está en la ACL
+  const buildUser = (fbUser: any, access: AccessDoc): User => ({
+    id: fbUser.uid,
+    name: fbUser.displayName || access.displayName || "",
+    email: fbUser.email || access.email,
+    picture: fbUser.photoURL || "",
+    role: access.role,
+  });
+
+  // Maneja el caso "no autorizado": signOut + redirect
+  const handleNoAccess = async () => {
+    try { await fbSignOut(auth); } catch { }
+    setUser(null);
+    // Redirección dura fuera de la app
+    window.location.replace(NO_ACCESS_URL);
+  };
+
+  // Observa sesión y verifica ACL
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
-      if (firebaseUser) {
-        const userData: User = {
-          id: firebaseUser.uid,
-          name: firebaseUser.displayName || '',
-          email: firebaseUser.email || '',
-          picture: firebaseUser.photoURL || '',
-          isAdmin: AUTHORIZED_EMAILS.includes(firebaseUser.email || ''),
-        };
-        setUser(userData);
-        localStorage.setItem('user', JSON.stringify(userData));
-      } else {
-        setUser(null);
-        localStorage.removeItem('user');
+    const unsub = onAuthStateChanged(auth, async (fbUser) => {
+      try {
+        if (!fbUser) {
+          setUser(null);
+          return;
+        }
+        const email = fbUser.email || "";
+        const access = await fetchAccess(email);
+        // Si no está en la lista o está inactivo: expulsar
+        if (!access || access.active === false) {
+          await handleNoAccess();
+          return;
+        }
+        setUser(buildUser(fbUser, access));
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     });
-    return () => unsubscribe();
+    return () => unsub();
   }, []);
 
+  // Google Sign-In → luego verificamos ACL
   const signIn = async () => {
     setLoading(true);
     try {
       const provider = new GoogleAuthProvider();
-      const result = await signInWithPopup(auth, provider);
-      const firebaseUser = result.user;
-      const userData: User = {
-        id: firebaseUser.uid,
-        name: firebaseUser.displayName || '',
-        email: firebaseUser.email || '',
-        picture: firebaseUser.photoURL || '',
-        isAdmin: AUTHORIZED_EMAILS.includes(firebaseUser.email || ''),
-      };
-      setUser(userData);
-      localStorage.setItem('user', JSON.stringify(userData));
-    } catch (error) {
-      console.error('Error signing in:', error);
+      provider.setCustomParameters({ prompt: "select_account" });
+      const res = await signInWithPopup(auth, provider);
+      // aquí onAuthStateChanged se encarga de consultar la ACL y setear/expulsar
+      await res.user.getIdToken(true); // refresca token (buena práctica)
+    } catch (e) {
+      console.error("Error en signIn:", e);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const signOut = async () => {
     setLoading(true);
     try {
-      await firebaseSignOut(auth);
+      await fbSignOut(auth);
       setUser(null);
-      localStorage.removeItem('user');
-    } catch (error) {
-      console.error('Error signing out:', error);
+    } catch (e) {
+      console.error("Error en signOut:", e);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
-  const value = {
-    user,
-    loading,
-    signIn,
-    signOut,
-  };
-
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return (
+    <Ctx.Provider value={{ user, loading, signIn, signOut }}>
+      {children}
+    </Ctx.Provider>
+  );
 };
