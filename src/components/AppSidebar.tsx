@@ -62,7 +62,7 @@ export function AppSidebar() {
       collapsible="icon"
     >
       <SidebarHeader
-        className="p-4 bg-blue-700 text-white cursor-pointer hover:bg-blue-800 transition-colors"
+        className="p-4 bg-mi-azul text-white cursor-pointer hover:bg-blue-800 transition-colors"
         onClick={() => navigate('/')}
       >
         <div className="flex items-center gap-3">
@@ -78,7 +78,7 @@ export function AppSidebar() {
         </div>
       </SidebarHeader>
 
-      <SidebarContent className="flex-1 bg-blue-700 text-white">
+      <SidebarContent className="flex-1 bg-mi-azul text-white">
         <SidebarGroup>
           <SidebarGroupLabel className={isCollapsed ? "sr-only text-slate-400" : " text-slate-400"}>
             Navegación
@@ -103,7 +103,7 @@ export function AppSidebar() {
         </SidebarGroup>
       </SidebarContent>
 
-      <SidebarFooter className="p-4 border-t bg-blue-700">
+      <SidebarFooter className="p-4 border-t bg-mi-azul">
         <div className="flex items-center gap-3">
           <Avatar className="h-8 w-8 flex-shrink-0">
             <AvatarImage src={user?.picture} alt={user?.name} />
