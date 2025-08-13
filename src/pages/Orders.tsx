@@ -39,7 +39,6 @@ import { useClients } from "@/hooks/useClients";
 import { useServices } from "@/hooks/useServices";
 import { usePayments } from "@/hooks/usePayments";
 import { Order } from "@/types/order";
-import { cn } from "@/lib/utils";
 
 export default function OrdersPage() {
   const { orders, loading, createOrder, updateOrder, deleteOrder } = useOrders();
@@ -77,7 +76,7 @@ export default function OrdersPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    // Buscar o crear cliente
+    // 1) Buscar o crear cliente
     let clientId = "";
     const existingClient = await findClientByPhone(formData.clientPhone);
 
@@ -90,9 +89,11 @@ export default function OrdersPage() {
       });
     }
 
+    // 2) Crear/actualizar orden
     const balance = formData.total - formData.deposit;
 
     if (editingOrder) {
+      // Nota: considera deshabilitar edición de "deposit" aquí y mover toda gestión de pagos a Payments
       await updateOrder(editingOrder.id, {
         clientId,
         serviceId: formData.serviceId,
@@ -105,17 +106,24 @@ export default function OrdersPage() {
         status: editingOrder.status,
       });
     } else {
-      await createOrder({
+      // 2.a Crear orden SIN abono directo (deposit=0); saldo=total
+      const orderId = await createOrder({
         clientId,
         serviceId: formData.serviceId,
         startDate: formData.startDate,
         expectedEndDate: formData.expectedEndDate,
         details: formData.details,
-        deposit: formData.deposit,
         total: formData.total,
-        balance,
+        deposit: 0,
+        balance: formData.total,
         status: "pendiente",
       });
+
+      // 2.b Si el formulario tenía abono inicial, registrarlo como pago real
+      if (formData.deposit > 0) {
+        // Ajusta método si luego añades selector en este diálogo
+        await registerPayment(orderId, formData.deposit, "efectivo", "Abono inicial");
+      }
     }
 
     setIsDialogOpen(false);
@@ -197,7 +205,7 @@ export default function OrdersPage() {
                               ...formData,
                               serviceId: service.id,
                               total: service.price,
-                              deposit: 0,
+                              deposit: 0, // reset del abono al seleccionar servicio
                             })
                           }
                           className="flex justify-between"
@@ -240,7 +248,10 @@ export default function OrdersPage() {
                     type="date"
                     value={formData.expectedEndDate}
                     onChange={(e) =>
-                      setFormData({ ...formData, expectedEndDate: e.target.value })
+                      setFormData({
+                        ...formData,
+                        expectedEndDate: e.target.value,
+                      })
                     }
                   />
                 </div>
@@ -255,9 +266,10 @@ export default function OrdersPage() {
                     onChange={(e) =>
                       setFormData({
                         ...formData,
-                        total: Number(e.target.value),
+                        total: Number(e.target.value || 0),
                       })
                     }
+                    min={0}
                   />
                 </div>
                 <div>
@@ -268,14 +280,15 @@ export default function OrdersPage() {
                     onChange={(e) =>
                       setFormData({
                         ...formData,
-                        deposit: Number(e.target.value),
+                        deposit: Number(e.target.value || 0),
                       })
                     }
+                    min={0}
                   />
                 </div>
                 <div>
                   <Label>Saldo</Label>
-                  <Input value={formData.total - formData.deposit} disabled />
+                  <Input value={Math.max(0, formData.total - formData.deposit)} disabled />
                 </div>
               </div>
 
@@ -285,7 +298,10 @@ export default function OrdersPage() {
                   <Select
                     value={editingOrder.status}
                     onValueChange={(value) =>
-                      setEditingOrder({ ...editingOrder, status: value as Order["status"] })
+                      setEditingOrder({
+                        ...editingOrder,
+                        status: value as Order["status"],
+                      })
                     }
                   >
                     <SelectTrigger>
@@ -332,11 +348,19 @@ export default function OrdersPage() {
                   <TableRow key={order.id}>
                     <TableCell>{client?.name}</TableCell>
                     <TableCell>{service?.name}</TableCell>
-                    <TableCell>Bs. {order.total.toFixed(2)}</TableCell>
-                    <TableCell>Bs. {order.deposit.toFixed(2)}</TableCell>
-                    <TableCell>Bs. {order.balance.toFixed(2)}</TableCell>
+                    <TableCell>Bs. {Number(order.total).toFixed(2)}</TableCell>
+                    <TableCell>Bs. {Number(order.deposit).toFixed(2)}</TableCell>
+                    <TableCell>Bs. {Number(order.balance).toFixed(2)}</TableCell>
                     <TableCell>
-                      <span className={getStatusStyle(order.status)}>
+                      <span
+                        className={
+                          order.status === "pendiente"
+                            ? "bg-yellow-100 text-yellow-800 px-2 py-1 rounded-full text-xs font-medium"
+                            : order.status === "completado"
+                              ? "bg-green-100 text-green-800 px-2 py-1 rounded-full text-xs font-medium"
+                              : "bg-red-100 text-red-800 px-2 py-1 rounded-full text-xs font-medium"
+                        }
+                      >
                         {order.status}
                       </span>
                     </TableCell>
@@ -354,8 +378,8 @@ export default function OrdersPage() {
                             startDate: order.startDate,
                             expectedEndDate: order.expectedEndDate,
                             details: order.details,
-                            deposit: order.deposit,
-                            total: order.total,
+                            deposit: Number(order.deposit) || 0,
+                            total: Number(order.total) || 0,
                           });
                           setIsDialogOpen(true);
                         }}

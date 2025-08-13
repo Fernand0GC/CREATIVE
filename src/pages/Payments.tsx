@@ -30,8 +30,6 @@ import { useClients } from "@/hooks/useClients";
 import { useServices } from "@/hooks/useServices";
 
 import { Payment } from "@/types/payment";
-import { doc, updateDoc } from "firebase/firestore";
-import { db } from "@/firebase";
 
 export default function PaymentsPage() {
   const { payments, registerPayment, getPendingPayments } = usePayments();
@@ -40,7 +38,6 @@ export default function PaymentsPage() {
   const { services } = useServices();
 
   const [loading, setLoading] = useState(true);
-  const [pendingOrders, setPendingOrders] = useState<string[]>([]);
 
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
@@ -55,17 +52,17 @@ export default function PaymentsPage() {
     const loadData = async () => {
       setLoading(true);
       await getOrders();
-      const pendings = await getPendingPayments();
-      setPendingOrders(pendings.map((o) => o.id));
+      await getPendingPayments(); // mantiene consistencia con la vista
       setLoading(false);
     };
     loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Resumen de pagos simplificado usando solo orders
+  // Resumen usando SOLO la fuente de verdad: orders (deposit/balance)
   const paymentSummaries = useMemo(() => {
     return orders
-      .filter((order) => order.status === "pendiente" && order.balance > 0)
+      .filter((order) => order.status === "pendiente" && Number(order.balance) > 0)
       .map((order) => {
         const client = clients.find((c) => c.id === order.clientId);
         const service = services.find((s) => s.id === order.serviceId);
@@ -74,9 +71,9 @@ export default function PaymentsPage() {
           orderId: order.id,
           clientName: client?.name || "Cliente no encontrado",
           serviceName: service?.name || "Servicio no encontrado",
-          total: order.total,
-          paid: order.deposit, // Usando el depósito como cantidad pagada
-          remaining: order.balance, // Usando el balance directamente de la orden
+          total: Number(order.total) || 0,
+          paid: Number(order.deposit) || 0,
+          remaining: Number(order.balance) || 0,
         };
       });
   }, [orders, clients, services]);
@@ -84,43 +81,35 @@ export default function PaymentsPage() {
   const handleRegisterPayment = async () => {
     if (!selectedOrderId) return;
 
+    // Validación simple
+    if (!(newPayment.amount > 0)) return;
+
+    const order = orders.find((o) => o.id === selectedOrderId);
+    if (!order) return;
+
+    // Evita pagar más que el saldo
+    const remaining = Math.max(0, Number(order.total) - Number(order.deposit));
+    const amount = Math.min(Number(newPayment.amount), remaining);
+
     try {
-      // Obtener la orden actual
-      const order = orders.find((o) => o.id === selectedOrderId);
-      if (!order) return;
-
-      // Calcular nuevos valores
-      const newPaid = order.deposit + newPayment.amount;
-      const newBalance = order.total - newPaid;
-
-      // Actualizar la orden en Firebase
-      await updateDoc(doc(db, "orders", selectedOrderId), {
-        deposit: newPaid,
-        balance: newBalance,
-        // Si el balance es 0, la orden está completamente pagada
-        status: newBalance === 0 ? "completado" : "pendiente",
-        updatedAt: new Date().toISOString(),
-      });
-
-      // Registrar el pago
+      // Registrar el pago (la transacción actualiza deposit/balance/status)
       await registerPayment(
         selectedOrderId,
-        newPayment.amount,
+        amount,
         newPayment.method,
         newPayment.notes
       );
 
-      // Refrescar datos
+      // Refrescar datos de órdenes (payments ya se refresca dentro del hook)
       await getOrders();
-      const pendings = await getPendingPayments();
-      setPendingOrders(pendings.map((o) => o.id));
+      await getPendingPayments();
 
       // Limpiar el formulario
       setIsDialogOpen(false);
       setNewPayment({ amount: 0, method: "efectivo", notes: "" });
     } catch (error) {
       console.error("Error al registrar el pago:", error);
-      // Aquí podrías agregar una notificación de error
+      // Aquí podrías disparar un toast/alert
     }
   };
 
@@ -205,10 +194,11 @@ export default function PaymentsPage() {
                 onChange={(e) =>
                   setNewPayment({
                     ...newPayment,
-                    amount: parseFloat(e.target.value),
+                    amount: parseFloat(e.target.value || "0"),
                   })
                 }
                 required
+                min={0}
               />
             </div>
 

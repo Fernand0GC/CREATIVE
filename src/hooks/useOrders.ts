@@ -8,22 +8,26 @@ import {
     deleteDoc,
     doc,
     query,
-    orderBy
+    orderBy,
+    serverTimestamp,
 } from "firebase/firestore";
-import { Order } from "@/types/order";
+import type { Order } from "@/types/order";
 
 export const useOrders = () => {
     const [orders, setOrders] = useState<Order[]>([]);
     const [loading, setLoading] = useState(true);
 
+    const ordersCol = collection(db, "orders");
+
     const getOrders = async () => {
         setLoading(true);
         try {
-            const q = query(collection(db, "orders"), orderBy("createdAt", "desc"));
+            // Asegúrate de que todos los docs tengan createdAt para poder ordenar
+            const q = query(ordersCol, orderBy("createdAt", "desc"));
             const snapshot = await getDocs(q);
-            const data = snapshot.docs.map((doc) => ({
-                id: doc.id,
-                ...doc.data()
+            const data = snapshot.docs.map((d) => ({
+                id: d.id,
+                ...(d.data() as any),
             })) as Order[];
             setOrders(data);
         } catch (error) {
@@ -33,31 +37,43 @@ export const useOrders = () => {
         }
     };
 
+    /**
+     * Crea una orden con createdAt=serverTimestamp().
+     * Devuelve el ID del documento creado.
+     */
     const createOrder = async (orderData: Omit<Order, "id" | "createdAt">) => {
-        const newDoc = await addDoc(collection(db, "orders"), {
+        const newRef = await addDoc(ordersCol, {
             ...orderData,
-            createdAt: new Date().toISOString()
+            createdAt: serverTimestamp(),
         });
         await getOrders();
-        return newDoc.id;
+        return newRef.id;
     };
 
+    /**
+     * Actualiza una orden e inyecta updatedAt=serverTimestamp().
+     */
     const updateOrder = async (id: string, updates: Partial<Order>) => {
-        await updateDoc(doc(db, "orders", id), {
+        await updateDoc(doc(ordersCol, id), {
             ...updates,
-            updatedAt: new Date().toISOString()
+            updatedAt: serverTimestamp(),
         });
         await getOrders();
     };
 
+    /**
+     * Elimina una orden localmente tras borrar en Firestore.
+     */
     const deleteOrder = async (id: string) => {
-        await deleteDoc(doc(db, "orders", id));
+        await deleteDoc(doc(ordersCol, id));
         setOrders((prev) => prev.filter((o) => o.id !== id));
     };
 
     useEffect(() => {
-        getOrders();
+        void getOrders();
     }, []);
 
     return { orders, loading, getOrders, createOrder, updateOrder, deleteOrder };
 };
+
+export default useOrders;
