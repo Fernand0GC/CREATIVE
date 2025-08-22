@@ -1,6 +1,6 @@
 // src/pages/Orders.tsx
 import { useMemo, useState, useEffect } from "react";
-import { Plus, Pencil, Trash2, Eye, FileDown } from "lucide-react";
+import { Plus, Pencil, Trash2, Eye, FileDown, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -68,12 +68,30 @@ const fmtDate = (v: any): string => {
   return d.toLocaleDateString("es-BO", { year: "numeric", month: "2-digit", day: "2-digit" });
 };
 
+const normalizeText = (s: string) =>
+  (s || "")
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase()
+    .trim();
+
+const digits = (s: string) => (s || "").replace(/\D/g, "");
+
+// YYYY-MM-DD => ms (00:00 local)
+const ymdToMs = (ymd: string) => {
+  if (!ymd) return NaN;
+  const [y, m, d] = ymd.split("-").map((x) => Number(x));
+  if (!y || !m || !d) return NaN;
+  const dt = new Date(y, m - 1, d, 0, 0, 0, 0);
+  return dt.getTime();
+};
+
 export default function OrdersPage() {
   const {
     orders,
     loading,
     createOrder,
-    createOrderWithServiceResolution, // 👈 NUEVO
+    createOrderWithServiceResolution, // creación con servicio nuevo
     updateOrder,
     deleteOrder,
   } = useOrders();
@@ -85,11 +103,12 @@ export default function OrdersPage() {
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
   const [viewingOrder, setViewingOrder] = useState<Order | null>(null);
 
+  // ---------- FORM ----------
   const [formData, setFormData] = useState({
     clientName: "",
     clientPhone: "",
     serviceId: "",
-    serviceName: "", // 👈 NUEVO (texto libre)
+    serviceName: "", // texto libre para servicio nuevo
     startDate: new Date().toISOString().split("T")[0],
     expectedEndDate: "",
     details: "",
@@ -98,7 +117,20 @@ export default function OrdersPage() {
     quantity: 1,
   });
 
-  // 🔁 toggle de estado (evitar clics múltiples mientras guarda)
+  // ---------- FILTROS ----------
+  const [searchText, setSearchText] = useState(""); // cliente o celular
+  const [statusFilter, setStatusFilter] = useState<"todos" | Order["status"]>("todos");
+  const [dateFrom, setDateFrom] = useState<string>("");
+  const [dateTo, setDateTo] = useState<string>("");
+
+  const clearFilters = () => {
+    setSearchText("");
+    setStatusFilter("todos");
+    setDateFrom("");
+    setDateTo("");
+  };
+
+  // toggle de estado (evitar clics múltiples mientras guarda)
   const [togglingStatusId, setTogglingStatusId] = useState<string | null>(null);
   const STATUSES: Order["status"][] = ["pendiente", "completado", "cancelado"];
   const nextStatus = (s: Order["status"]) => {
@@ -106,16 +138,13 @@ export default function OrdersPage() {
     return STATUSES[(i + 1) % STATUSES.length];
   };
 
-  // 🔎 buscador de servicios
+  // buscador de servicios del form
   const [serviceQuery, setServiceQuery] = useState("");
 
-  const normalize = (s: string) =>
-    s.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
-
   const filteredServices = useMemo(() => {
-    const q = serviceQuery.trim();
+    const q = normalizeText(serviceQuery);
     if (q.length < 2) return [];
-    return services.filter((s) => normalize(s.name).includes(normalize(q)));
+    return services.filter((s) => normalizeText(s.name).includes(q));
   }, [serviceQuery, services]);
 
   const resetForm = () => {
@@ -123,7 +152,7 @@ export default function OrdersPage() {
       clientName: "",
       clientPhone: "",
       serviceId: "",
-      serviceName: "", // reset
+      serviceName: "",
       startDate: new Date().toISOString().split("T")[0],
       expectedEndDate: "",
       details: "",
@@ -153,7 +182,7 @@ export default function OrdersPage() {
     [formData.serviceId, serviceById]
   );
 
-  // 🔄 recalcular total al cambiar servicio o cantidad (solo si hay serviceId)
+  // recalcular total al cambiar servicio o cantidad (solo si hay serviceId)
   useEffect(() => {
     if (!formData.serviceId) return;
     const svc = serviceById[formData.serviceId];
@@ -165,7 +194,7 @@ export default function OrdersPage() {
   }, [formData.serviceId, formData.quantity, serviceById]);
 
   // ---------- ordenar por fecha reciente ----------
-  const sortedOrders = useMemo(() => {
+  const baseSortedOrders = useMemo(() => {
     const arr = [...(orders || [])];
     arr.sort(
       (a, b) =>
@@ -175,6 +204,42 @@ export default function OrdersPage() {
     return arr;
   }, [orders]);
 
+  // ---------- aplicar filtros y búsqueda ----------
+  const filteredSortedOrders = useMemo(() => {
+    const qText = normalizeText(searchText);
+    const qDigits = digits(searchText);
+
+    const fromMs = ymdToMs(dateFrom);
+    const toMs = ymdToMs(dateTo);
+    // si el usuario coloca fecha fin, incluimos todo ese día sumando 1 día menos 1 ms
+    const toMsInclusive = isNaN(toMs) ? NaN : toMs + 24 * 60 * 60 * 1000 - 1;
+
+    return baseSortedOrders.filter((o) => {
+      // filtro por estado
+      if (statusFilter !== "todos" && o.status !== statusFilter) return false;
+
+      // filtro por fechas (por startDate)
+      if (dateFrom || dateTo) {
+        const oMs = ymdToMs(o.startDate);
+        if (!isNaN(fromMs) && (isNaN(oMs) || oMs < fromMs)) return false;
+        if (!isNaN(toMsInclusive) && (isNaN(oMs) || oMs > toMsInclusive)) return false;
+      }
+
+      // búsqueda por cliente o celular
+      if (qText || qDigits) {
+        const cli = clientById[o.clientId];
+        const name = normalizeText(cli?.name || "");
+        const phone = digits(cli?.phone || "");
+        const matchText = qText ? name.includes(qText) : false;
+        const matchPhone = qDigits ? phone.includes(qDigits) : false;
+        if (!matchText && !matchPhone) return false;
+      }
+
+      return true;
+    });
+  }, [baseSortedOrders, statusFilter, dateFrom, dateTo, searchText, clientById]);
+
+  // ---------- submit ----------
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -219,7 +284,7 @@ export default function OrdersPage() {
       let orderId = "";
 
       if (formData.serviceId) {
-        // caso normal (servicio existente)
+        // servicio existente
         orderId = await createOrder({
           clientId,
           serviceId: formData.serviceId,
@@ -233,7 +298,7 @@ export default function OrdersPage() {
           quantity: formData.quantity,
         });
       } else {
-        // caso servicio NUEVO por nombre libre
+        // servicio nuevo por nombre libre
         orderId = await createOrderWithServiceResolution({
           clientId,
           serviceName: formData.serviceName.trim(),
@@ -295,7 +360,7 @@ export default function OrdersPage() {
     }
   };
 
-  // 🔎 pagos por orden (solo para mostrar en el modal)
+  // pagos por orden (solo para mostrar en el modal)
   const paymentsByOrder = useMemo(() => {
     const map = new Map<string, any[]>();
     (payments || []).forEach((p: any) => {
@@ -446,7 +511,7 @@ export default function OrdersPage() {
     pdf.save(`orden_${order.id || "sin_id"}.pdf`);
   };
 
-  // 🔁 Toggle al hacer clic en el chip de estado
+  // Toggle al hacer clic en el chip de estado
   const handleToggleStatus = async (order: Order) => {
     if (togglingStatusId) return; // evita doble clic mientras guarda
     const newStatus = nextStatus(order.status);
@@ -464,12 +529,11 @@ export default function OrdersPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
+      {/* HEADER */}
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
           <h1 className="text-3xl font-bold text-foreground">Órdenes de trabajo</h1>
-          <p className="text-muted-foreground">
-            Gestiona todas las órdenes de trabajo de tu negocio.
-          </p>
+          <p className="text-muted-foreground">Gestiona todas las órdenes de trabajo de tu negocio.</p>
         </div>
 
         <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
@@ -747,6 +811,71 @@ export default function OrdersPage() {
         </Dialog>
       </div>
 
+      {/* FILTROS Y BÚSQUEDA */}
+      <div className="bg-card/60 backdrop-blur-sm rounded-lg border p-4 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+        <div className="flex-1">
+          <Label className="mb-1 block">Buscar por cliente o celular</Label>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              className="pl-9"
+              placeholder="Ej.: Juan / 70012345"
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+            />
+            {searchText && (
+              <button
+                type="button"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                onClick={() => setSearchText("")}
+                aria-label="Limpiar búsqueda"
+                title="Limpiar búsqueda"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 w-full md:w-auto">
+          <div>
+            <Label className="mb-1 block">Estado</Label>
+            <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as any)}>
+              <SelectTrigger>
+                <SelectValue placeholder="Todos" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="todos">Todos</SelectItem>
+                <SelectItem value="pendiente">Pendiente</SelectItem>
+                <SelectItem value="completado">Completado</SelectItem>
+                <SelectItem value="cancelado">Cancelado</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div>
+            <Label className="mb-1 block">Desde</Label>
+            <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+          </div>
+
+          <div>
+            <Label className="mb-1 block">Hasta</Label>
+            <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+          </div>
+        </div>
+
+        <div className="flex items-end">
+          <Button variant="secondary" onClick={clearFilters}>
+            Limpiar
+          </Button>
+        </div>
+      </div>
+
+      {/* Conteo resultados */}
+      <div className="text-sm text-muted-foreground">
+        Mostrando <b>{filteredSortedOrders.length}</b> de {orders.length} órdenes
+      </div>
+
       {/* Tabla principal */}
       <div className="bg-card/80 backdrop-blur-sm rounded-lg border shadow-soft">
         {loading ? (
@@ -766,14 +895,19 @@ export default function OrdersPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sortedOrders.map((order) => {
+              {filteredSortedOrders.map((order) => {
                 const client = clientById[order.clientId];
                 const service = serviceById[order.serviceId];
                 const isSaving = togglingStatusId === order.id;
 
                 return (
                   <TableRow key={order.id}>
-                    <TableCell>{client?.name || "—"}</TableCell>
+                    <TableCell>
+                      <div className="flex flex-col">
+                        <span>{client?.name || "—"}</span>
+                        <span className="text-xs text-muted-foreground">{client?.phone || "—"}</span>
+                      </div>
+                    </TableCell>
                     <TableCell>{service?.name || "—"}</TableCell>
                     <TableCell>{order.quantity ?? 1}</TableCell>
                     <TableCell>{fmtBs(order.total)}</TableCell>
@@ -830,10 +964,10 @@ export default function OrdersPage() {
                   </TableRow>
                 );
               })}
-              {sortedOrders.length === 0 && (
+              {filteredSortedOrders.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={8} className="text-center">
-                    No hay órdenes registradas
+                    No hay órdenes que coincidan con tu búsqueda/filtros.
                   </TableCell>
                 </TableRow>
               )}
