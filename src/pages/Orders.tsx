@@ -69,7 +69,14 @@ const fmtDate = (v: any): string => {
 };
 
 export default function OrdersPage() {
-  const { orders, loading, createOrder, updateOrder, deleteOrder } = useOrders();
+  const {
+    orders,
+    loading,
+    createOrder,
+    createOrderWithServiceResolution, // 👈 NUEVO
+    updateOrder,
+    deleteOrder,
+  } = useOrders();
   const { clients, createClient, findClientByPhone } = useClients();
   const { services } = useServices();
   const { payments, registerPayment } = usePayments(); // pagos solo para ver en modal (NO se imprimen en PDF)
@@ -82,6 +89,7 @@ export default function OrdersPage() {
     clientName: "",
     clientPhone: "",
     serviceId: "",
+    serviceName: "", // 👈 NUEVO (texto libre)
     startDate: new Date().toISOString().split("T")[0],
     expectedEndDate: "",
     details: "",
@@ -115,6 +123,7 @@ export default function OrdersPage() {
       clientName: "",
       clientPhone: "",
       serviceId: "",
+      serviceName: "", // reset
       startDate: new Date().toISOString().split("T")[0],
       expectedEndDate: "",
       details: "",
@@ -144,7 +153,7 @@ export default function OrdersPage() {
     [formData.serviceId, serviceById]
   );
 
-  // 🔄 recalcular total al cambiar servicio o cantidad
+  // 🔄 recalcular total al cambiar servicio o cantidad (solo si hay serviceId)
   useEffect(() => {
     if (!formData.serviceId) return;
     const svc = serviceById[formData.serviceId];
@@ -172,7 +181,8 @@ export default function OrdersPage() {
     // Validaciones
     if (!formData.clientName.trim()) return alert("Ingresa el nombre del cliente.");
     if (!formData.clientPhone.trim()) return alert("Ingresa el teléfono.");
-    if (!formData.serviceId) return alert("Selecciona un servicio.");
+    if (!formData.serviceId && !formData.serviceName.trim())
+      return alert("Selecciona un servicio o escribe uno nuevo.");
     if (formData.total < 0) return alert("El total no puede ser negativo.");
     if (formData.deposit < 0) return alert("El abono no puede ser negativo.");
     if (formData.deposit > formData.total)
@@ -195,7 +205,7 @@ export default function OrdersPage() {
     if (editingOrder) {
       await updateOrder(editingOrder.id, {
         clientId,
-        serviceId: formData.serviceId,
+        serviceId: formData.serviceId, // al editar mantenemos serviceId
         startDate: formData.startDate,
         expectedEndDate: formData.expectedEndDate,
         details: formData.details,
@@ -206,18 +216,37 @@ export default function OrdersPage() {
         quantity: formData.quantity,
       });
     } else {
-      const orderId = await createOrder({
-        clientId,
-        serviceId: formData.serviceId,
-        startDate: formData.startDate,
-        expectedEndDate: formData.expectedEndDate,
-        details: formData.details,
-        total: formData.total,
-        deposit: 0,
-        balance: formData.total,
-        status: "pendiente",
-        quantity: formData.quantity,
-      });
+      let orderId = "";
+
+      if (formData.serviceId) {
+        // caso normal (servicio existente)
+        orderId = await createOrder({
+          clientId,
+          serviceId: formData.serviceId,
+          startDate: formData.startDate,
+          expectedEndDate: formData.expectedEndDate,
+          details: formData.details,
+          total: formData.total,
+          deposit: 0,
+          balance: formData.total,
+          status: "pendiente",
+          quantity: formData.quantity,
+        });
+      } else {
+        // caso servicio NUEVO por nombre libre
+        orderId = await createOrderWithServiceResolution({
+          clientId,
+          serviceName: formData.serviceName.trim(),
+          startDate: formData.startDate,
+          expectedEndDate: formData.expectedEndDate,
+          details: formData.details,
+          total: formData.total,
+          deposit: 0,
+          balance: formData.total,
+          status: "pendiente",
+          quantity: formData.quantity,
+        });
+      }
 
       if (formData.deposit > 0) {
         await registerPayment(orderId, formData.deposit, "efectivo", "Abono inicial");
@@ -235,6 +264,7 @@ export default function OrdersPage() {
       clientName: cli?.name || "",
       clientPhone: cli?.phone || "",
       serviceId: order.serviceId,
+      serviceName: "", // al editar, usamos el servicio existente
       startDate: order.startDate,
       expectedEndDate: order.expectedEndDate,
       details: order.details,
@@ -304,7 +334,7 @@ export default function OrdersPage() {
     const infoBlocks = [
       ...split(`Cliente: ${client?.name || "—"}`),
       ...split(`Teléfono: ${client?.phone || "—"}`),
-      ...split(`Servicio: ${service?.name || "—"}`),
+      ...split(`Servicio: ${service?.name || (order as any)?.serviceName || "—"}`),
       ...split(`Cantidad: ${order.quantity ?? 1}`),
       ...split(`Fecha inicio: ${order.startDate || "—"}`),
       ...split(`Fecha estimada: ${order.expectedEndDate || "—"}`),
@@ -479,33 +509,47 @@ export default function OrdersPage() {
                 </div>
               </div>
 
-              {/* Servicio + buscador */}
+              {/* Servicio + buscador / texto libre */}
               <div>
                 <Label>Servicio</Label>
                 <div className="rounded-lg border">
                   <Command shouldFilter={false}>
                     <CommandInput
-                      placeholder="Buscar servicio..."
-                      value={serviceQuery || selectedServiceName}
+                      placeholder="Buscar o escribir servicio..."
+                      value={
+                        formData.serviceId
+                          ? selectedServiceName
+                          : serviceQuery || formData.serviceName
+                      }
                       onValueChange={(v) => {
                         setServiceQuery(v);
-                        if (formData.serviceId) {
-                          setFormData((fd) => ({
-                            ...fd,
-                            serviceId: "",
-                            total: 0,
-                            deposit: 0,
-                          }));
-                        }
+                        setFormData((fd) => ({
+                          ...fd,
+                          serviceId: "",      // si escribe, limpiamos selección
+                          serviceName: v,     // guardamos nombre libre
+                          total: fd.serviceId ? 0 : fd.total, // si estaba seleccionado, resetea total
+                          deposit: fd.serviceId ? 0 : fd.deposit,
+                        }));
                       }}
                     />
                     <CommandList>
-                      {!formData.serviceId && serviceQuery.trim().length < 2 ? (
+                      {!formData.serviceId && (serviceQuery.trim().length < 2) ? (
                         <div className="p-3 text-sm text-muted-foreground">
-                          Escribe al menos <b>2</b> letras para buscar…
+                          Escribe al menos <b>2</b> letras para buscar o deja el nombre para crearlo.
                         </div>
                       ) : !formData.serviceId && filteredServices.length === 0 ? (
-                        <CommandEmpty>Sin resultados.</CommandEmpty>
+                        <>
+                          <CommandEmpty>Sin resultados.</CommandEmpty>
+                          {serviceQuery.trim().length >= 2 && (
+                            <div className="p-3 text-sm">
+                              ¿Crear servicio nuevo como:{" "}
+                              <b className="break-all">{serviceQuery.trim()}</b>?
+                              <div className="mt-2 text-xs text-muted-foreground">
+                                Se creará automáticamente al guardar la orden.
+                              </div>
+                            </div>
+                          )}
+                        </>
                       ) : !formData.serviceId ? (
                         <CommandGroup heading="Resultados">
                           {filteredServices.map((service) => (
@@ -516,6 +560,7 @@ export default function OrdersPage() {
                                 setFormData((fd) => ({
                                   ...fd,
                                   serviceId: service.id,
+                                  serviceName: "",
                                   total: Number(service.price || 0) * Number(fd.quantity || 1),
                                   deposit: 0,
                                 }));
@@ -534,7 +579,7 @@ export default function OrdersPage() {
                     </CommandList>
                   </Command>
 
-                  {formData.serviceId && (
+                  {formData.serviceId ? (
                     <div className="flex items-center justify-between px-3 py-2 border-t text-sm text-muted-foreground">
                       <span>
                         Seleccionado: <b>{selectedServiceName || "—"}</b>
@@ -546,6 +591,7 @@ export default function OrdersPage() {
                           setFormData((fd) => ({
                             ...fd,
                             serviceId: "",
+                            serviceName: serviceQuery || "",
                             total: 0,
                             deposit: 0,
                           }));
@@ -554,6 +600,10 @@ export default function OrdersPage() {
                       >
                         Cambiar
                       </button>
+                    </div>
+                  ) : (
+                    <div className="px-3 py-2 border-t text-xs text-muted-foreground">
+                      Si el servicio no existe, <b>lo crearemos automáticamente</b> al guardar.
                     </div>
                   )}
                 </div>
