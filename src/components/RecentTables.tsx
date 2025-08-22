@@ -178,17 +178,17 @@ const RecentTables = () => {
   return (
     <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
       {/* Órdenes recientes */}
-      <Card className="shadow-soft border-0 bg-card/80 backdrop-blur-sm">
+      <Card className="shadow-soft border-0 bg-gradient-to-b from-blue-900 to-blue-950 backdrop-blur-sm">
         <CardHeader>
           <CardTitle className="text-lg font-semibold text-foreground">
-            Órdenes recientes
+            <h2 className="text-white">Órdenes recientes</h2>
           </CardTitle>
         </CardHeader>
         <CardContent>
           <div className="rounded-lg border bg-background/50">
             <Table>
               <TableHeader>
-                <TableRow className="hover:bg-transparent border-muted">
+                <TableRow className="bg-blue-200  border-muted">
                   <TableHead className="font-medium">Nº</TableHead>
                   <TableHead className="font-medium">Cliente</TableHead>
                   <TableHead className="font-medium">Estado</TableHead>
@@ -197,7 +197,7 @@ const RecentTables = () => {
               </TableHeader>
               <TableBody>
                 {(!loadingOrders && !loadingCatalogs ? recentOrders : []).map((order) => (
-                  <TableRow key={`${order.id}-${order.seq}`} className="hover:bg-muted/50">
+                  <TableRow key={`${order.id}-${order.seq}`} className="bg-white hover:bg-muted/50">
                     <TableCell className="font-medium text-primary">{order.seq}</TableCell>
                     <TableCell>
                       <div>
@@ -231,7 +231,7 @@ const RecentTables = () => {
           </div>
 
           <div className="flex items-center justify-between mt-4">
-            <p className="text-sm text-muted-foreground">
+            <p className="text-sm text-white text-muted-foreground">
               Mostrando {showingOrders} de {totalOrders} órdenes
             </p>
             <div className="flex gap-2">
@@ -247,17 +247,17 @@ const RecentTables = () => {
       </Card>
 
       {/* Pagos recientes */}
-      <Card className="shadow-soft border-0 bg-card/80 backdrop-blur-sm">
+      <Card className="shadow-soft border-0 bg-gradient-to-b from-blue-900 to-blue-950 backdrop-blur-sm">
         <CardHeader>
           <CardTitle className="text-lg font-semibold text-foreground">
-            Pagos recientes
+            <h2 className="text-white">Pagos recientes</h2>
           </CardTitle>
         </CardHeader>
         <CardContent>
           <div className="rounded-lg border bg-background/50">
             <Table>
               <TableHeader>
-                <TableRow className="hover:bg-transparent border-muted">
+                <TableRow className="bg-blue-200 hover:bg-transparent border-muted">
                   <TableHead className="font-medium">Nº</TableHead>
                   <TableHead className="font-medium">Cliente</TableHead>
                   <TableHead className="font-medium">Estado (orden)</TableHead>
@@ -266,7 +266,7 @@ const RecentTables = () => {
               </TableHeader>
               <TableBody>
                 {(loadingPayments ? [] : recentPayments).map((payment) => (
-                  <TableRow key={`${payment.id}-${payment.seq}`} className="hover:bg-muted/50">
+                  <TableRow key={`${payment.id}-${payment.seq}`} className=" bg-white hover:bg-muted/50">
                     <TableCell className="font-medium text-primary">{payment.seq}</TableCell>
                     <TableCell>
                       <div>

@@ -1,14 +1,20 @@
+import type { FSDate } from "./fsdate";
+
 export interface Order {
     id: string;
-    clientId: string; // referencia a Client
-    serviceId: string; // referencia a Service
-    startDate: string; // ISO date
-    expectedEndDate: string; // ISO date
+    clientId: string;   // referencia a Client
+    serviceId: string;  // referencia a Service
+
+    // Estas dos vienen de inputs <input type="date">, mantenlas como string (YYYY-MM-DD)
+    startDate: string;
+    expectedEndDate: string;
+
     details: string;
-    deposit: number;
+    deposit: number;    // suma de todos los payments
     total: number;
     balance: number;
     status: "pendiente" | "cancelado" | "completado";
-    createdAt: string; // ISO date
-    updatedAt?: string; // ISO date opcional
+
+    createdAt: FSDate;
+    updatedAt?: FSDate;
 }

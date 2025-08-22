@@ -5,22 +5,37 @@ import {
     addDoc,
     getDocs,
     query,
-    where
+    where,
+    orderBy,
+    serverTimestamp,
 } from "firebase/firestore";
-import { Client } from "@/types/client";
+import type { Client } from "@/types/client";
+import { toDate } from "@/utils/toDate";
+
+type ClientWithDates = Client & {
+    createdAtDate: Date | null;
+    updatedAtDate?: Date | null;
+};
 
 export const useClients = () => {
-    const [clients, setClients] = useState<Client[]>([]);
+    const [clients, setClients] = useState<ClientWithDates[]>([]);
     const [loading, setLoading] = useState(true);
+
+    const clientsCol = collection(db, "clients");
 
     const getClients = async () => {
         setLoading(true);
         try {
-            const snapshot = await getDocs(collection(db, "clients"));
-            const data = snapshot.docs.map((doc) => ({
-                id: doc.id,
-                ...doc.data()
-            })) as Client[];
+            // Ordenamos por createdAt para vistas más consistentes
+            const snap = await getDocs(query(clientsCol, orderBy("createdAt", "desc")));
+            const data = snap.docs.map((d) => {
+                const raw = { id: d.id, ...(d.data() as any) } as Client;
+                return {
+                    ...raw,
+                    createdAtDate: toDate(raw.createdAt),
+                    updatedAtDate: toDate(raw.updatedAt),
+                } as ClientWithDates;
+            });
             setClients(data);
         } catch (error) {
             console.error("Error al obtener clientes:", error);
@@ -30,25 +45,34 @@ export const useClients = () => {
     };
 
     const createClient = async (clientData: Omit<Client, "id" | "createdAt">) => {
-        const docRef = await addDoc(collection(db, "clients"), {
+        const docRef = await addDoc(clientsCol, {
             ...clientData,
-            createdAt: new Date().toISOString()
+            createdAt: serverTimestamp(),   // ✅ unificado a Timestamp
         });
         await getClients();
         return docRef.id;
     };
 
     const findClientByPhone = async (phone: string) => {
-        const q = query(collection(db, "clients"), where("phone", "==", phone));
+        const q = query(clientsCol, where("phone", "==", phone));
         const snapshot = await getDocs(q);
-        return snapshot.empty
-            ? null
-            : ({ id: snapshot.docs[0].id, ...snapshot.docs[0].data() } as Client);
+        if (snapshot.empty) return null;
+
+        const d = snapshot.docs[0];
+        const raw = { id: d.id, ...(d.data() as any) } as Client;
+        const normalized: ClientWithDates = {
+            ...raw,
+            createdAtDate: toDate(raw.createdAt),
+            updatedAtDate: toDate(raw.updatedAt),
+        };
+        return normalized;
     };
 
     useEffect(() => {
-        getClients();
+        void getClients();
     }, []);
 
     return { clients, loading, getClients, createClient, findClientByPhone };
 };
+
+export default useClients;

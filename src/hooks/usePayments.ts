@@ -76,9 +76,10 @@ export const usePayments = () => {
             const currentDeposit = Number(order.deposit ?? 0);
             const newDeposit = currentDeposit + Number(amount);
             const newBalance = Math.max(0, total - newDeposit);
-            const newStatus: Order["status"] = newBalance === 0 ? "completado" : "pendiente";
+            const newStatus: Order["status"] =
+                newBalance === 0 ? "completado" : "pendiente";
 
-            // 1) crear pago
+            // 1) crear pago (con date)
             const payRef = doc(paymentsCol); // id autogenerado
             tx.set(payRef, {
                 id: payRef.id,
@@ -86,7 +87,8 @@ export const usePayments = () => {
                 amount: Number(amount),
                 paymentMethod: method,
                 notes: notes ?? "",
-                createdAt: serverTimestamp(),
+                date: serverTimestamp(),       // 👈 NUEVO: fecha del pago
+                createdAt: serverTimestamp(),  // marca de creación técnica
             });
 
             // 2) actualizar orden
@@ -105,8 +107,8 @@ export const usePayments = () => {
     };
 
     /**
-     * (Opcional) Solo crea el documento de pago, NO toca la orden.
-     * Úsalo solo si tienes otra lógica alrededor.
+     * Solo crea el documento de pago, NO toca la orden.
+     * También guarda date.
      */
     const registerPaymentOnly = async (
         orderId: string,
@@ -122,6 +124,7 @@ export const usePayments = () => {
             amount: Number(amount),
             paymentMethod: method,
             notes: notes ?? "",
+            date: serverTimestamp(),       // 👈 NUEVO
             createdAt: serverTimestamp(),
         });
 
@@ -130,7 +133,7 @@ export const usePayments = () => {
     };
 
     /**
-     * (Opcional) Recalcula el balance de una orden, por si necesitas
+     * Recalcula el balance de una orden, por si necesitas
      * sincronizar manualmente luego de imports/bulk ops.
      */
     const recalcOrderFromPayments = async (orderId: string) => {
@@ -140,7 +143,10 @@ export const usePayments = () => {
 
         const q = query(paymentsCol, where("orderId", "==", orderId));
         const snap = await getDocs(q);
-        const sum = snap.docs.reduce((acc, d) => acc + Number((d.data() as any).amount ?? 0), 0);
+        const sum = snap.docs.reduce(
+            (acc, d) => acc + Number((d.data() as any).amount ?? 0),
+            0
+        );
 
         const order = orderSnap.data() as Order;
         const total = Number(order.total ?? 0);

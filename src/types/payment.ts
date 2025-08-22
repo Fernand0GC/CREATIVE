@@ -1,9 +1,13 @@
+import type { FSDate } from "./fsdate";
+
 export interface Payment {
     id: string;
     orderId: string; // referencia a Order
     amount: number;
-    date: string; // ISO date del pago
+    /** Fecha efectiva del pago (para diario, reportes, filtros) */
+    date: FSDate;
     paymentMethod: "efectivo" | "transferencia" | "qr";
     notes?: string;
-    createdAt: string; // ISO date
+    /** Marca técnica de creación en la BD (puede coincidir con date) */
+    createdAt: FSDate;
 }

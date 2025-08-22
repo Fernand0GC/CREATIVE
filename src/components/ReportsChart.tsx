@@ -86,12 +86,12 @@ const ReportsChart = () => {
   }, [payments]);
 
   return (
-    <Card className="mt-6 shadow-soft border-0 bg-card/80 backdrop-blur-sm">
+    <Card className="mt-6 shadow-soft border-0 bg-gradient-to-b from-blue-900 to-blue-950 backdrop-blur-sm">
       <CardHeader>
         <CardTitle className="text-lg font-semibold text-foreground">
-          Resumen financiero
+          <h2 className="text-white">Resumen financiero</h2>
         </CardTitle>
-        <p className="text-sm text-muted-foreground">
+        <p className="text-sm text-gray-200 text-muted-foreground">
           Ingresos (pagos) por mes — últimos 6 meses
         </p>
       </CardHeader>
@@ -123,7 +123,7 @@ const ReportsChart = () => {
                   name,
                 ]}
                 contentStyle={{
-                  backgroundColor: "hsl(var(--card))",
+                  backgroundColor: "hsl(var(--))",
                   border: "1px solid hsl(var(--border))",
                   borderRadius: "8px",
                   boxShadow: "0 4px 20px -4px rgba(0,0,0,0.1)",

@@ -1,6 +1,6 @@
 // src/pages/Orders.tsx
-import { useMemo, useState } from "react";
-import { Plus, Pencil, Trash2 } from "lucide-react";
+import { useMemo, useState, useEffect } from "react";
+import { Plus, Pencil, Trash2, Eye, FileDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -40,6 +40,7 @@ import { useClients } from "@/hooks/useClients";
 import { useServices } from "@/hooks/useServices";
 import { usePayments } from "@/hooks/usePayments";
 import { Order } from "@/types/order";
+import { jsPDF } from "jspdf";
 
 // ---------- helpers ----------
 const fmtBs = (n: number | string) =>
@@ -56,14 +57,27 @@ const tsToMs = (v: any): number => {
   return isNaN(d.getTime()) ? 0 : d.getTime();
 };
 
+const fmtDate = (v: any): string => {
+  if (!v) return "—";
+  if (typeof v === "object" && typeof v.seconds === "number") {
+    const d = new Date(v.seconds * 1000);
+    return d.toLocaleDateString("es-BO", { year: "numeric", month: "2-digit", day: "2-digit" });
+  }
+  const d = new Date(v);
+  if (isNaN(d.getTime())) return String(v);
+  return d.toLocaleDateString("es-BO", { year: "numeric", month: "2-digit", day: "2-digit" });
+};
+
 export default function OrdersPage() {
   const { orders, loading, createOrder, updateOrder, deleteOrder } = useOrders();
   const { clients, createClient, findClientByPhone } = useClients();
   const { services } = useServices();
-  const { registerPayment } = usePayments();
+  const { payments, registerPayment } = usePayments(); // pagos solo para ver en modal (NO se imprimen en PDF)
 
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
+  const [viewingOrder, setViewingOrder] = useState<Order | null>(null);
+
   const [formData, setFormData] = useState({
     clientName: "",
     clientPhone: "",
@@ -73,9 +87,18 @@ export default function OrdersPage() {
     details: "",
     deposit: 0,
     total: 0,
+    quantity: 1,
   });
 
-  // 🔎 estado del buscador de servicios
+  // 🔁 toggle de estado (evitar clics múltiples mientras guarda)
+  const [togglingStatusId, setTogglingStatusId] = useState<string | null>(null);
+  const STATUSES: Order["status"][] = ["pendiente", "completado", "cancelado"];
+  const nextStatus = (s: Order["status"]) => {
+    const i = STATUSES.indexOf(s);
+    return STATUSES[(i + 1) % STATUSES.length];
+  };
+
+  // 🔎 buscador de servicios
   const [serviceQuery, setServiceQuery] = useState("");
 
   const normalize = (s: string) =>
@@ -97,12 +120,13 @@ export default function OrdersPage() {
       details: "",
       deposit: 0,
       total: 0,
+      quantity: 1,
     });
     setEditingOrder(null);
-    setServiceQuery(""); // ✅ limpiar buscador
+    setServiceQuery("");
   };
 
-  // ---------- catálogos en O(1) ----------
+  // ---------- catálogos ----------
   const clientById = useMemo(() => {
     const m: Record<string, (typeof clients)[number]> = {};
     (clients || []).forEach((c) => (m[c.id] = c));
@@ -115,13 +139,23 @@ export default function OrdersPage() {
     return m;
   }, [services]);
 
-  // nombre del servicio actualmente seleccionado (si lo hay)
   const selectedServiceName = useMemo(
     () => (formData.serviceId ? serviceById[formData.serviceId]?.name || "" : ""),
     [formData.serviceId, serviceById]
   );
 
-  // ---------- ordena por fecha más reciente ----------
+  // 🔄 recalcular total al cambiar servicio o cantidad
+  useEffect(() => {
+    if (!formData.serviceId) return;
+    const svc = serviceById[formData.serviceId];
+    if (!svc) return;
+    setFormData((fd) => ({
+      ...fd,
+      total: Number(svc.price || 0) * Number(fd.quantity || 1),
+    }));
+  }, [formData.serviceId, formData.quantity, serviceById]);
+
+  // ---------- ordenar por fecha reciente ----------
   const sortedOrders = useMemo(() => {
     const arr = [...(orders || [])];
     arr.sort(
@@ -135,7 +169,7 @@ export default function OrdersPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    // Validaciones rápidas
+    // Validaciones
     if (!formData.clientName.trim()) return alert("Ingresa el nombre del cliente.");
     if (!formData.clientPhone.trim()) return alert("Ingresa el teléfono.");
     if (!formData.serviceId) return alert("Selecciona un servicio.");
@@ -143,8 +177,9 @@ export default function OrdersPage() {
     if (formData.deposit < 0) return alert("El abono no puede ser negativo.");
     if (formData.deposit > formData.total)
       return alert("El abono no puede exceder el total.");
+    if (formData.quantity < 1) return alert("La cantidad mínima es 1.");
 
-    // 1) Buscar o crear cliente
+    // Cliente
     let clientId = "";
     const existingClient = await findClientByPhone(formData.clientPhone);
     if (existingClient) {
@@ -156,7 +191,7 @@ export default function OrdersPage() {
       });
     }
 
-    // 2) Crear/actualizar orden
+    // Crear / Actualizar
     if (editingOrder) {
       await updateOrder(editingOrder.id, {
         clientId,
@@ -168,6 +203,7 @@ export default function OrdersPage() {
         total: formData.total,
         balance: Math.max(0, Number(formData.total) - Number(editingOrder.deposit || 0)),
         status: editingOrder.status,
+        quantity: formData.quantity,
       });
     } else {
       const orderId = await createOrder({
@@ -180,6 +216,7 @@ export default function OrdersPage() {
         deposit: 0,
         balance: formData.total,
         status: "pendiente",
+        quantity: formData.quantity,
       });
 
       if (formData.deposit > 0) {
@@ -189,6 +226,25 @@ export default function OrdersPage() {
 
     setIsDialogOpen(false);
     resetForm();
+  };
+
+  const handleEdit = (order: Order) => {
+    const cli = clientById[order.clientId];
+    setEditingOrder(order);
+    setFormData({
+      clientName: cli?.name || "",
+      clientPhone: cli?.phone || "",
+      serviceId: order.serviceId,
+      startDate: order.startDate,
+      expectedEndDate: order.expectedEndDate,
+      details: order.details,
+      deposit: Number(order.deposit) || 0,
+      total: Number(order.total) || 0,
+      quantity: Number(order.quantity ?? 1),
+    });
+    const svcName = serviceById[order.serviceId]?.name || "";
+    setServiceQuery(svcName);
+    setIsDialogOpen(true);
   };
 
   const handleDelete = async (id: string) => {
@@ -206,6 +262,173 @@ export default function OrdersPage() {
         return "bg-red-100 text-red-800 px-2 py-1 rounded-full text-xs font-medium";
       default:
         return "";
+    }
+  };
+
+  // 🔎 pagos por orden (solo para mostrar en el modal)
+  const paymentsByOrder = useMemo(() => {
+    const map = new Map<string, any[]>();
+    (payments || []).forEach((p: any) => {
+      const key = p.orderId || "";
+      if (!key) return;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(p);
+    });
+    for (const [, arr] of map) {
+      arr.sort((a, b) => tsToMs(b.createdAt) - tsToMs(a.createdAt));
+    }
+    return map;
+  }, [payments]);
+
+  // ---------- Generar PDF térmico (sin lista de pagos, diseño mejorado) ----------
+  const generateThermalPDF = (order: Order) => {
+    const client = clientById[order.clientId];
+    const service = serviceById[order.serviceId];
+
+    // Configuración base
+    const PAPER_WIDTH_MM = 80;     // cambia a 58 si tu rollo es de 58 mm
+    const marginX = 5;
+    const contentWidth = PAPER_WIDTH_MM - marginX * 2;
+
+    // Estilos
+    const line = 5;        // alto de línea
+    const fontTitle = 12;
+    const fontNormal = 9;
+    const fontSmall = 8;
+
+    // Prepara contenido con autoajuste de altura
+    const doc = new jsPDF({ unit: "mm", format: [PAPER_WIDTH_MM, 200] });
+
+    const split = (t: string) => doc.splitTextToSize(t, contentWidth);
+
+    const infoBlocks = [
+      ...split(`Cliente: ${client?.name || "—"}`),
+      ...split(`Teléfono: ${client?.phone || "—"}`),
+      ...split(`Servicio: ${service?.name || "—"}`),
+      ...split(`Cantidad: ${order.quantity ?? 1}`),
+      ...split(`Fecha inicio: ${order.startDate || "—"}`),
+      ...split(`Fecha estimada: ${order.expectedEndDate || "—"}`),
+      "",
+      ...split(`Detalles: ${order.details || "—"}`),
+    ];
+
+    // Cálculo de altura aproximada
+    const headH = line + 4; // para el título y separadores
+    const bodyH = infoBlocks.length * line + 4;
+    const totalsH = line * 3 + 8; // tres filas + padding
+    const footerH = line + 6;
+    const estHeight = Math.max(120, headH + bodyH + totalsH + footerH);
+
+    // Re-crear doc con altura estimada
+    const pdf = new jsPDF({ unit: "mm", format: [PAPER_WIDTH_MM, estHeight] });
+
+    // Helpers de dibujo
+    const hr = (y: number) => {
+      pdf.setDrawColor(180);
+      pdf.line(marginX, y, PAPER_WIDTH_MM - marginX, y);
+    };
+
+    const kv = (label: string, value: string, y: number) => {
+      // etiqueta izquierda, valor derecha
+      pdf.setFont("helvetica", "normal");
+      pdf.text(label, marginX, y);
+      pdf.setFont("helvetica", "bold");
+      pdf.text(value, PAPER_WIDTH_MM - marginX, y, { align: "right" });
+    };
+
+    const badge = (text: string, y: number) => {
+      // “chapita” del estado
+      const padX = 3;
+      const padY = 1.5;
+      pdf.setFontSize(8);
+      pdf.setFont("helvetica", "bold");
+      const w = pdf.getTextWidth(text) + padX * 2;
+      const x = (PAPER_WIDTH_MM - w) / 2;
+      pdf.setDrawColor(120);
+      pdf.setFillColor(245, 245, 245);
+      pdf.roundedRect(x, y - 4, w, 6.5, 1.2, 1.2, "FD");
+      pdf.setTextColor(70);
+      pdf.text(text, PAPER_WIDTH_MM / 2, y, { align: "center", baseline: "middle" as any });
+      pdf.setTextColor(0);
+    };
+
+    let y = 8;
+
+    // Título
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(fontTitle);
+    pdf.text("ORDEN DE TRABAJO", PAPER_WIDTH_MM / 2, y, { align: "center" });
+    y += line;
+    hr(y);
+    y += 2;
+
+    // Chapita con el estado
+    badge(String(order.status || "pendiente").toUpperCase(), y + 2);
+    y += 8;
+
+    // Info
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(fontNormal);
+    infoBlocks.forEach((ln) => {
+      if (ln === "") {
+        y += 2;
+        hr(y);
+        y += 2;
+      } else {
+        pdf.text(ln as string, marginX, y);
+        y += line;
+      }
+    });
+
+    y += 2;
+    hr(y);
+    y += 2;
+
+    // Totales (bloque con borde)
+    const boxX = marginX;
+    const boxW = contentWidth;
+    const boxH = line * 3 + 4;
+    pdf.setDrawColor(160);
+    pdf.roundedRect(boxX, y, boxW, boxH, 1.5, 1.5);
+
+    let yTotals = y + line;
+    kv("Total", fmtBs(order.total), yTotals);
+    yTotals += line;
+    kv("Abonos", fmtBs(order.deposit), yTotals);
+    yTotals += line;
+    kv("Saldo", fmtBs(order.balance), yTotals);
+    y += boxH + 4;
+
+    hr(y);
+    y += line - 2;
+
+    // Footer
+    pdf.setFontSize(fontSmall);
+    pdf.setFont("helvetica", "normal");
+    pdf.text(
+      `ID: ${order.id} • Generado: ${new Date().toLocaleString("es-BO")}`,
+      PAPER_WIDTH_MM / 2,
+      y,
+      { align: "center" }
+    );
+
+    // Descargar
+    pdf.save(`orden_${order.id || "sin_id"}.pdf`);
+  };
+
+  // 🔁 Toggle al hacer clic en el chip de estado
+  const handleToggleStatus = async (order: Order) => {
+    if (togglingStatusId) return; // evita doble clic mientras guarda
+    const newStatus = nextStatus(order.status);
+    try {
+      setTogglingStatusId(order.id);
+      await updateOrder(order.id, { status: newStatus });
+      // updateOrder ya refresca la lista (getOrders dentro del hook)
+    } catch (err) {
+      console.error("No se pudo cambiar el estado:", err);
+      alert("No se pudo cambiar el estado. Intenta de nuevo.");
+    } finally {
+      setTogglingStatusId(null);
     }
   };
 
@@ -228,12 +451,11 @@ export default function OrdersPage() {
           </DialogTrigger>
           <DialogContent className="max-w-2xl">
             <DialogHeader>
-              <DialogTitle>
-                {editingOrder ? "Editar orden" : "Nueva orden"}
-              </DialogTitle>
+              <DialogTitle>{editingOrder ? "Editar orden" : "Nueva orden"}</DialogTitle>
             </DialogHeader>
 
             <form onSubmit={handleSubmit} className="space-y-4">
+              {/* Cliente */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <Label>Nombre del cliente</Label>
@@ -257,25 +479,27 @@ export default function OrdersPage() {
                 </div>
               </div>
 
+              {/* Servicio + buscador */}
               <div>
                 <Label>Servicio</Label>
-
                 <div className="rounded-lg border">
                   <Command shouldFilter={false}>
-                    {/* Muestra el nombre del seleccionado si existe, si no usa el query */}
                     <CommandInput
                       placeholder="Buscar servicio..."
                       value={serviceQuery || selectedServiceName}
                       onValueChange={(v) => {
                         setServiceQuery(v);
-                        // Si vuelve a tipear, “libera” la selección para buscar de nuevo
                         if (formData.serviceId) {
-                          setFormData((fd) => ({ ...fd, serviceId: "" }));
+                          setFormData((fd) => ({
+                            ...fd,
+                            serviceId: "",
+                            total: 0,
+                            deposit: 0,
+                          }));
                         }
                       }}
                     />
                     <CommandList>
-                      {/* Mostrar resultados solo si está buscando y no hay servicio seleccionado */}
                       {!formData.serviceId && serviceQuery.trim().length < 2 ? (
                         <div className="p-3 text-sm text-muted-foreground">
                           Escribe al menos <b>2</b> letras para buscar…
@@ -289,14 +513,13 @@ export default function OrdersPage() {
                               key={service.id}
                               value={service.name}
                               onSelect={() => {
-                                // ✅ setear selección + rellenar input
                                 setFormData((fd) => ({
                                   ...fd,
                                   serviceId: service.id,
-                                  total: service.price,
+                                  total: Number(service.price || 0) * Number(fd.quantity || 1),
                                   deposit: 0,
                                 }));
-                                setServiceQuery(service.name); // ✅ refleja selección en la barra
+                                setServiceQuery(service.name);
                               }}
                               className="flex justify-between"
                             >
@@ -313,13 +536,20 @@ export default function OrdersPage() {
 
                   {formData.serviceId && (
                     <div className="flex items-center justify-between px-3 py-2 border-t text-sm text-muted-foreground">
-                      <span>Seleccionado: <b>{selectedServiceName || "—"}</b></span>
+                      <span>
+                        Seleccionado: <b>{selectedServiceName || "—"}</b>
+                      </span>
                       <button
                         type="button"
                         className="text-primary hover:underline"
                         onClick={() => {
-                          setFormData((fd) => ({ ...fd, serviceId: "", total: 0, deposit: 0 }));
-                          setServiceQuery(""); // vuelve al modo búsqueda
+                          setFormData((fd) => ({
+                            ...fd,
+                            serviceId: "",
+                            total: 0,
+                            deposit: 0,
+                          }));
+                          setServiceQuery("");
                         }}
                       >
                         Cambiar
@@ -329,6 +559,23 @@ export default function OrdersPage() {
                 </div>
               </div>
 
+              {/* Cantidad */}
+              <div>
+                <Label>Cantidad</Label>
+                <Input
+                  type="number"
+                  value={formData.quantity}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      quantity: Math.max(1, Number(e.target.value || 1)),
+                    })
+                  }
+                  min={1}
+                />
+              </div>
+
+              {/* Detalles */}
               <div>
                 <Label>Detalles adicionales</Label>
                 <Textarea
@@ -339,6 +586,7 @@ export default function OrdersPage() {
                 />
               </div>
 
+              {/* Fechas */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <Label>Fecha de inicio</Label>
@@ -365,6 +613,7 @@ export default function OrdersPage() {
                 </div>
               </div>
 
+              {/* Pagos */}
               <div className="grid grid-cols-3 gap-4">
                 <div>
                   <Label>Total</Label>
@@ -415,6 +664,7 @@ export default function OrdersPage() {
                 </div>
               </div>
 
+              {/* Estado al editar */}
               {editingOrder && (
                 <div>
                   <Label>Estado</Label>
@@ -447,6 +697,7 @@ export default function OrdersPage() {
         </Dialog>
       </div>
 
+      {/* Tabla principal */}
       <div className="bg-card/80 backdrop-blur-sm rounded-lg border shadow-soft">
         {loading ? (
           <div className="p-8 text-center">Cargando órdenes...</div>
@@ -456,6 +707,7 @@ export default function OrdersPage() {
               <TableRow>
                 <TableHead>Cliente</TableHead>
                 <TableHead>Trabajo</TableHead>
+                <TableHead>Cantidad</TableHead>
                 <TableHead>Total</TableHead>
                 <TableHead>Abono</TableHead>
                 <TableHead>Saldo</TableHead>
@@ -467,41 +719,51 @@ export default function OrdersPage() {
               {sortedOrders.map((order) => {
                 const client = clientById[order.clientId];
                 const service = serviceById[order.serviceId];
+                const isSaving = togglingStatusId === order.id;
+
                 return (
                   <TableRow key={order.id}>
                     <TableCell>{client?.name || "—"}</TableCell>
                     <TableCell>{service?.name || "—"}</TableCell>
+                    <TableCell>{order.quantity ?? 1}</TableCell>
                     <TableCell>{fmtBs(order.total)}</TableCell>
                     <TableCell>{fmtBs(order.deposit)}</TableCell>
                     <TableCell>{fmtBs(order.balance)}</TableCell>
                     <TableCell>
-                      <span className={getStatusStyle(order.status)}>
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        title="Cambiar estado"
+                        onClick={() => handleToggleStatus(order)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") handleToggleStatus(order);
+                        }}
+                        className={[
+                          getStatusStyle(order.status),
+                          "inline-flex items-center cursor-pointer select-none transition",
+                          "hover:opacity-80 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary/50",
+                          isSaving ? "opacity-50 pointer-events-none" : "",
+                        ].join(" ")}
+                      >
                         {order.status}
                       </span>
                     </TableCell>
-                    <TableCell className="whitespace-nowrap">
+                    <TableCell className="whitespace-nowrap flex gap-1">
                       <Button
                         variant="ghost"
                         size="icon"
-                        onClick={() => {
-                          setEditingOrder(order);
-                          const cli = clientById[order.clientId];
-                          setFormData({
-                            clientName: cli?.name || "",
-                            clientPhone: cli?.phone || "",
-                            serviceId: order.serviceId,
-                            startDate: order.startDate,
-                            expectedEndDate: order.expectedEndDate,
-                            details: order.details,
-                            deposit: Number(order.deposit) || 0,
-                            total: Number(order.total) || 0,
-                          });
-                          // ✅ pre-rellenar el buscador con el nombre del servicio seleccionado
-                          const svcName = serviceById[order.serviceId]?.name || "";
-                          setServiceQuery(svcName);
-                          setIsDialogOpen(true);
-                        }}
+                        onClick={() => setViewingOrder(order)} // 👁️ ver detalles
+                        aria-label="Ver detalles"
+                        title="Ver detalles"
+                      >
+                        <Eye className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => handleEdit(order)}
                         aria-label="Editar"
+                        title="Editar"
                       >
                         <Pencil className="h-4 w-4" />
                       </Button>
@@ -510,6 +772,7 @@ export default function OrdersPage() {
                         size="icon"
                         onClick={() => handleDelete(order.id)}
                         aria-label="Eliminar"
+                        title="Eliminar"
                       >
                         <Trash2 className="h-4 w-4" />
                       </Button>
@@ -519,7 +782,7 @@ export default function OrdersPage() {
               })}
               {sortedOrders.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center">
+                  <TableCell colSpan={8} className="text-center">
                     No hay órdenes registradas
                   </TableCell>
                 </TableRow>
@@ -528,6 +791,106 @@ export default function OrdersPage() {
           </Table>
         )}
       </div>
+
+      {/* Modal de detalles (incluye botón PDF; la lista de pagos solo se ve aquí, NO se imprime) */}
+      <Dialog open={!!viewingOrder} onOpenChange={() => setViewingOrder(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader className="flex flex-row items-center justify-between">
+            <DialogTitle>Detalles de la orden</DialogTitle>
+            {viewingOrder && (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => generateThermalPDF(viewingOrder)}
+                className="gap-2"
+                title="Generar PDF para impresora térmica"
+              >
+                <FileDown className="h-4 w-4" />
+                Generar PDF (térmica)
+              </Button>
+            )}
+          </DialogHeader>
+
+          {viewingOrder && (
+            <div className="space-y-6">
+              {/* Info básica */}
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <p><b>Cliente:</b> {clientById[viewingOrder.clientId]?.name || "—"}</p>
+                  <p><b>Teléfono:</b> {clientById[viewingOrder.clientId]?.phone || "—"}</p>
+                  <p><b>Servicio:</b> {serviceById[viewingOrder.serviceId]?.name || "—"}</p>
+                  <p><b>Cantidad:</b> {viewingOrder.quantity ?? 1}</p>
+                </div>
+                <div>
+                  <p><b>Fecha inicio:</b> {viewingOrder.startDate || "—"}</p>
+                  <p><b>Fecha estimada:</b> {viewingOrder.expectedEndDate || "—"}</p>
+                  <p><b>Estado:</b> {viewingOrder.status}</p>
+                </div>
+                <div className="col-span-2">
+                  <p><b>Detalles:</b></p>
+                  <p className="text-muted-foreground">{viewingOrder.details || "—"}</p>
+                </div>
+              </div>
+
+              {/* Totales */}
+              <div className="grid grid-cols-3 gap-4 text-sm">
+                <div className="p-3 rounded-lg border bg-muted/30">
+                  <p className="text-xs text-muted-foreground">Total</p>
+                  <p className="text-lg font-semibold">{fmtBs(viewingOrder.total)}</p>
+                </div>
+                <div className="p-3 rounded-lg border bg-muted/30">
+                  <p className="text-xs text-muted-foreground">Abonos (en orden)</p>
+                  <p className="text-lg font-semibold">{fmtBs(viewingOrder.deposit)}</p>
+                </div>
+                <div className="p-3 rounded-lg border bg-muted/30">
+                  <p className="text-xs text-muted-foreground">Saldo</p>
+                  <p className="text-lg font-semibold">{fmtBs(viewingOrder.balance)}</p>
+                </div>
+              </div>
+
+              {/* Pagos visibles en modal (no en PDF) */}
+              <div>
+                <h3 className="text-base font-medium mb-2">Pagos registrados</h3>
+                {(() => {
+                  const list = paymentsByOrder.get(viewingOrder.id) || [];
+                  return (
+                    <div className="rounded-lg border overflow-hidden">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Fecha</TableHead>
+                            <TableHead>Método</TableHead>
+                            <TableHead>Nota</TableHead>
+                            <TableHead className="text-right">Monto</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {list.length > 0 ? (
+                            list.map((p: any) => (
+                              <TableRow key={p.id}>
+                                <TableCell>{fmtDate(p.createdAt)}</TableCell>
+                                <TableCell className="capitalize">{p.method || "—"}</TableCell>
+                                <TableCell className="text-muted-foreground">{p.note || "—"}</TableCell>
+                                <TableCell className="text-right">{fmtBs(p.amount)}</TableCell>
+                              </TableRow>
+                            ))
+                          ) : (
+                            <TableRow>
+                              <TableCell colSpan={4} className="text-center text-muted-foreground">
+                                No hay pagos registrados.
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -24,7 +24,7 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ children }) => {
 
           </header>
 
-          <main className="flex-1 p-6 bg-gradient-to-br from-slate-50 to-blue-50/30">{children}</main>
+          <main className="flex-1 p-6 bg-gray-400">{children}</main>
         </div>
       </div>
     </SidebarProvider>

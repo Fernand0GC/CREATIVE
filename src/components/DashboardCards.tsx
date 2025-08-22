@@ -130,10 +130,10 @@ const DashboardCards = () => {
       {cards.map((card, index) => (
         <Card
           key={index}
-          className={`shadow-lg border-2 ${card.borderColor} bg-white hover:shadow-xl transition-all duration-300 hover:-translate-y-1`}
+          className={`shadow-lg  bg-gradient-to-b from-blue-800 to-sky-950 hover:shadow-xl transition-all duration-300 hover:-translate-y-1`}
         >
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
-            <CardTitle className="text-sm font-semibold text-slate-600">
+            <CardTitle className="text-sm font-semibold text-gray-400">
               {card.title}
             </CardTitle>
             <div
@@ -147,8 +147,8 @@ const DashboardCards = () => {
             </div>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold text-slate-900 mb-1">{card.value}</div>
-            <p className="text-sm text-slate-500 font-medium">{card.change}</p>
+            <div className="text-3xl font-bold text-slate-200 mb-1">{card.value}</div>
+            <p className="text-sm text-slate-300 font-medium">{card.change}</p>
           </CardContent>
         </Card>
       ))}

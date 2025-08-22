@@ -65,17 +65,12 @@ export function AppSidebar() {
         className="p-4 bg-mi-azul text-white cursor-pointer hover:bg-blue-800 transition-colors"
         onClick={() => navigate('/')}
       >
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg flex items-center justify-center shadow-soft flex-shrink-0">
-            <img src="/logo.png" alt="Logo" className="h-8 w-8" />
-          </div>
-          {!isCollapsed && (
-            <div>
-              <h2 className="font-semibold text-xl text-foreground text-white">CREATIVE</h2>
 
-            </div>
-          )}
+        <div className="h-2rounded-lg flex items-center justify-center shadow-soft flex-shrink-0">
+          <img src="/CREATIVE.png" alt="Logo" className="w-32 " />
         </div>
+
+
       </SidebarHeader>
 
       <SidebarContent className="flex-1 bg-mi-azul text-white">
