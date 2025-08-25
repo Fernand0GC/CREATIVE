@@ -59,10 +59,10 @@ export default function PaymentsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Resumen usando SOLO la fuente de verdad: orders (deposit/balance)
+  // Resumen usando SOLO balance (pendiente real), no status
   const paymentSummaries = useMemo(() => {
     return orders
-      .filter((order) => order.status === "pendiente" && Number(order.balance) > 0)
+      .filter((order) => Number(order.balance) > 0) // 👈 criterio correcto
       .map((order) => {
         const client = clients.find((c) => c.id === order.clientId);
         const service = services.find((s) => s.id === order.serviceId);
@@ -118,7 +118,7 @@ export default function PaymentsPage() {
       <div>
         <h1 className="text-3xl font-bold">Pagos Pendientes</h1>
         <p className="text-muted-foreground">
-          Gestiona los pagos pendientes y registra nuevos pagos.
+          Gestiona los pagos con saldo pendiente y registra nuevos pagos.
         </p>
       </div>
 
@@ -128,13 +128,13 @@ export default function PaymentsPage() {
         <div className="rounded-md border bg-card/80 backdrop-blur-sm">
           <Table>
             <TableHeader>
-              <TableRow>
-                <TableHead>Cliente</TableHead>
-                <TableHead>Servicio</TableHead>
-                <TableHead>Total</TableHead>
-                <TableHead>Pagado</TableHead>
-                <TableHead>Pendiente</TableHead>
-                <TableHead>Acciones</TableHead>
+              <TableRow className=" bg-gradient-to-b from-blue-800 to-sky-950" >
+                <TableHead className="text-white">Cliente</TableHead>
+                <TableHead className="text-white">Servicio</TableHead>
+                <TableHead className="text-white">Total</TableHead>
+                <TableHead className="text-white">Pagado</TableHead>
+                <TableHead className="text-white">Pendiente</TableHead>
+                <TableHead className="text-white">Acciones</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>

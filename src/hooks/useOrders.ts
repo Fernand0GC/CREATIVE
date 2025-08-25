@@ -11,6 +11,7 @@ import {
     orderBy,
     serverTimestamp,
     runTransaction,
+    onSnapshot,
 } from "firebase/firestore";
 import type { Order } from "@/types/order";
 import { getOrCreateServiceByName } from "@/hooks/useServices";
@@ -36,6 +37,7 @@ export const useOrders = () => {
 
     const ordersCol = collection(db, "orders");
 
+    /** Carga puntual (ya no imprescindible si usas onSnapshot). */
     const getOrders = async () => {
         setLoading(true);
         try {
@@ -43,7 +45,6 @@ export const useOrders = () => {
             const snapshot = await getDocs(q);
             const data = snapshot.docs.map((d) => {
                 const raw = { id: d.id, ...(d.data() as any) } as Order & { quantity?: number };
-                // Compatibilidad: si no hay quantity, usa 1
                 if (raw.quantity === undefined || raw.quantity === null) {
                     (raw as any).quantity = 1;
                 }
@@ -60,24 +61,21 @@ export const useOrders = () => {
     /**
      * API existente: crea una orden con createdAt=serverTimestamp().
      * Devuelve el ID del documento creado.
+     * (No llamamos getOrders porque onSnapshot refresca solo.)
      */
     const createOrder = async (orderData: Omit<Order, "id" | "createdAt">) => {
         const payload = {
             ...orderData,
-            // por si tu UI manda quantity opcional
             quantity: (orderData as any).quantity ?? 1,
             createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
         };
         const newRef = await addDoc(ordersCol, payload);
-        await getOrders();
         return newRef.id;
     };
 
     /**
-     * NUEVO: Crea una orden resolviendo el servicio por nombre si no existe.
-     * - Valida mínimos (clientId, total>=0, deposit>=0, deposit<=total).
-     * - Calcula balance si no lo pasas.
-     * - Usa transacción para asegurar consistencia.
+     * Crea una orden resolviendo el servicio por nombre si no existe.
      */
     const createOrderWithServiceResolution = async (input: CreateOrderWithServiceInput) => {
         const {
@@ -134,39 +132,57 @@ export const useOrders = () => {
             return newRef.id;
         });
 
-        await getOrders();
         return newOrderId;
     };
 
-    /**
-     * Actualiza una orden e inyecta updatedAt=serverTimestamp().
-     */
+    /** Actualiza una orden (onSnapshot refresca). */
     const updateOrder = async (id: string, updates: Partial<Order>) => {
         await updateDoc(doc(ordersCol, id), {
             ...updates,
             updatedAt: serverTimestamp(),
         });
-        await getOrders();
     };
 
-    /**
-     * Elimina una orden localmente tras borrar en Firestore.
-     */
+    /** Elimina una orden (quitamos de la UI de forma optimista). */
     const deleteOrder = async (id: string) => {
         await deleteDoc(doc(ordersCol, id));
         setOrders((prev) => prev.filter((o) => o.id !== id));
     };
 
+    /**
+     * ✅ Suscripción en tiempo real
+     * Arregla el desfase de “Abono = 0” después de registrar pago:
+     * en cuanto Firestore actualiza deposit/balance/status, la tabla se refresca sola.
+     */
     useEffect(() => {
-        void getOrders();
+        const q = query(ordersCol, orderBy("createdAt", "desc"));
+        const unsub = onSnapshot(
+            q,
+            (snap) => {
+                const data = snap.docs.map((d) => {
+                    const raw = { id: d.id, ...(d.data() as any) } as Order & { quantity?: number };
+                    if (raw.quantity === undefined || raw.quantity === null) {
+                        (raw as any).quantity = 1;
+                    }
+                    return raw as Order;
+                });
+                setOrders(data);
+                setLoading(false);
+            },
+            (err) => {
+                console.error("onSnapshot(orders) error:", err);
+                setLoading(false);
+            }
+        );
+        return () => unsub();
     }, []);
 
     return {
         orders,
         loading,
-        getOrders,
-        createOrder, // API existente
-        createOrderWithServiceResolution, // NUEVO para servicio libre/auto-creado
+        getOrders, // por si quieres forzar una recarga puntual
+        createOrder,
+        createOrderWithServiceResolution,
         updateOrder,
         deleteOrder,
     };

@@ -1,6 +1,6 @@
 // src/pages/Orders.tsx
-import { useMemo, useState, useEffect } from "react";
-import { Plus, Pencil, Trash2, Eye, FileDown, Search, X } from "lucide-react";
+import { useMemo, useState, useEffect, useRef, useDeferredValue, memo } from "react";
+import { Plus, Pencil, Trash2, Eye, FileDown, Search, X, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -42,7 +42,9 @@ import { usePayments } from "@/hooks/usePayments";
 import { Order } from "@/types/order";
 import { jsPDF } from "jspdf";
 
-// ---------- helpers ----------
+/* ===========================
+   Helpers base (formato/búsqueda)
+   =========================== */
 const fmtBs = (n: number | string) =>
   new Intl.NumberFormat("es-BO", {
     style: "currency",
@@ -55,17 +57,6 @@ const tsToMs = (v: any): number => {
   if (typeof v === "object" && typeof v.seconds === "number") return v.seconds * 1000;
   const d = new Date(v);
   return isNaN(d.getTime()) ? 0 : d.getTime();
-};
-
-const fmtDate = (v: any): string => {
-  if (!v) return "—";
-  if (typeof v === "object" && typeof v.seconds === "number") {
-    const d = new Date(v.seconds * 1000);
-    return d.toLocaleDateString("es-BO", { year: "numeric", month: "2-digit", day: "2-digit" });
-  }
-  const d = new Date(v);
-  if (isNaN(d.getTime())) return String(v);
-  return d.toLocaleDateString("es-BO", { year: "numeric", month: "2-digit", day: "2-digit" });
 };
 
 const normalizeText = (s: string) =>
@@ -86,24 +77,128 @@ const ymdToMs = (ymd: string) => {
   return dt.getTime();
 };
 
+/* ===========================
+   Tipos locales y utils
+   =========================== */
+type ClientLite = { id: string; name?: string; phone?: string };
+type ServiceLite = { id: string; name?: string; price?: number | null };
+
+// Orden extendida con campos “mostrables” ya resueltos:
+type HydratedOrder = Order & {
+  _clientName: string;
+  _clientPhone: string;
+  _serviceName: string;
+};
+
+function hydrateOrders(
+  orders: Order[],
+  clients: ClientLite[],
+  services: ServiceLite[]
+): HydratedOrder[] {
+  const cMap: Record<string, ClientLite> = {};
+  for (const c of clients) cMap[c.id] = c;
+
+  const sMap: Record<string, ServiceLite> = {};
+  for (const s of services) sMap[s.id] = s;
+
+  return orders.map((o) => {
+    const clientName = cMap[o.clientId]?.name ?? "—";
+    const clientPhone = cMap[o.clientId]?.phone ?? "—";
+    const serviceName = sMap[o.serviceId]?.name ?? "—";
+    return Object.assign({}, o, {
+      _clientName: clientName,
+      _clientPhone: clientPhone,
+      _serviceName: serviceName,
+    });
+  });
+}
+
+/* ================ Row memoizado ================ */
+const OrderRow = memo(function OrderRow({
+  order,
+  onView,
+  onEdit,
+  onDelete,
+  onChangeStatus,
+  isChangingStatus,
+}: {
+  order: HydratedOrder;
+  onView: (o: HydratedOrder) => void;
+  onEdit: (o: HydratedOrder) => void;
+  onDelete: (id: string) => void;
+  onChangeStatus: (o: HydratedOrder, status: Order["status"]) => void;
+  isChangingStatus: boolean;
+}) {
+  return (
+    <TableRow>
+      <TableCell>
+        <div className="flex flex-col leading-tight">
+          <span className="font-medium">{order._clientName || "—"}</span>
+          <span className="text-xs text-muted-foreground">{order._clientPhone || "—"}</span>
+        </div>
+      </TableCell>
+      <TableCell>{order._serviceName}</TableCell>
+      <TableCell>{order.quantity ?? 1}</TableCell>
+      <TableCell>{fmtBs(order.total)}</TableCell>
+      <TableCell>{fmtBs(order.deposit)}</TableCell>
+      <TableCell>{fmtBs(order.balance)}</TableCell>
+      <TableCell className="min-w-[160px]">
+        <Select
+          value={order.status}
+          onValueChange={(v) => onChangeStatus(order, v as Order["status"])}
+          disabled={isChangingStatus}
+        >
+          <SelectTrigger className="w-[160px]">
+            <SelectValue placeholder="Estado" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="pendiente">Pendiente</SelectItem>
+            <SelectItem value="completado">Completado</SelectItem>
+            <SelectItem value="cancelado">Cancelado</SelectItem>
+          </SelectContent>
+        </Select>
+      </TableCell>
+      <TableCell className="whitespace-nowrap flex gap-1">
+        <Button variant="ghost" size="icon" onClick={() => onView(order)} aria-label="Ver detalles" title="Ver detalles">
+          <Eye className="h-4 w-4" />
+        </Button>
+        <Button variant="ghost" size="icon" onClick={() => onEdit(order)} aria-label="Editar" title="Editar">
+          <Pencil className="h-4 w-4" />
+        </Button>
+        <Button variant="ghost" size="icon" onClick={() => onDelete(order.id)} aria-label="Eliminar" title="Eliminar">
+          <Trash2 className="h-4 w-4" />
+        </Button>
+      </TableCell>
+    </TableRow>
+  );
+});
+
+/* ===========================
+   Página
+   =========================== */
 export default function OrdersPage() {
   const {
     orders,
     loading,
     createOrder,
-    createOrderWithServiceResolution, // creación con servicio nuevo
+    createOrderWithServiceResolution,
     updateOrder,
     deleteOrder,
+    getOrders, // para refresco inmediato tras abono inicial
   } = useOrders();
   const { clients, createClient, findClientByPhone } = useClients();
   const { services } = useServices();
-  const { payments, registerPayment } = usePayments(); // pagos solo para ver en modal (NO se imprimen en PDF)
+  const { payments, registerPayment } = usePayments();
 
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
-  const [viewingOrder, setViewingOrder] = useState<Order | null>(null);
+  const [viewingOrder, setViewingOrder] = useState<HydratedOrder | null>(null);
 
-  // ---------- FORM ----------
+  // 🔒 Bloqueo anti-duplicados de envío
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const submitLockRef = useRef(false);
+
+  /* ---------- FORM ---------- */
   const [formData, setFormData] = useState({
     clientName: "",
     clientPhone: "",
@@ -117,8 +212,9 @@ export default function OrdersPage() {
     quantity: 1,
   });
 
-  // ---------- FILTROS ----------
+  /* ---------- FILTROS ---------- */
   const [searchText, setSearchText] = useState(""); // cliente o celular
+  const deferredSearch = useDeferredValue(searchText);
   const [statusFilter, setStatusFilter] = useState<"todos" | Order["status"]>("todos");
   const [dateFrom, setDateFrom] = useState<string>("");
   const [dateTo, setDateTo] = useState<string>("");
@@ -130,46 +226,11 @@ export default function OrdersPage() {
     setDateTo("");
   };
 
-  // toggle de estado (evitar clics múltiples mientras guarda)
-  const [togglingStatusId, setTogglingStatusId] = useState<string | null>(null);
-  const STATUSES: Order["status"][] = ["pendiente", "completado", "cancelado"];
-  const nextStatus = (s: Order["status"]) => {
-    const i = STATUSES.indexOf(s);
-    return STATUSES[(i + 1) % STATUSES.length];
-  };
+  /* ---------- estado: cambiar con Select ---------- */
+  const [statusChangingId, setStatusChangingId] = useState<string | null>(null);
 
-  // buscador de servicios del form
+  /* ---------- buscador de servicios (form) ---------- */
   const [serviceQuery, setServiceQuery] = useState("");
-
-  const filteredServices = useMemo(() => {
-    const q = normalizeText(serviceQuery);
-    if (q.length < 2) return [];
-    return services.filter((s) => normalizeText(s.name).includes(q));
-  }, [serviceQuery, services]);
-
-  const resetForm = () => {
-    setFormData({
-      clientName: "",
-      clientPhone: "",
-      serviceId: "",
-      serviceName: "",
-      startDate: new Date().toISOString().split("T")[0],
-      expectedEndDate: "",
-      details: "",
-      deposit: 0,
-      total: 0,
-      quantity: 1,
-    });
-    setEditingOrder(null);
-    setServiceQuery("");
-  };
-
-  // ---------- catálogos ----------
-  const clientById = useMemo(() => {
-    const m: Record<string, (typeof clients)[number]> = {};
-    (clients || []).forEach((c) => (m[c.id] = c));
-    return m;
-  }, [clients]);
 
   const serviceById = useMemo(() => {
     const m: Record<string, (typeof services)[number]> = {};
@@ -177,12 +238,7 @@ export default function OrdersPage() {
     return m;
   }, [services]);
 
-  const selectedServiceName = useMemo(
-    () => (formData.serviceId ? serviceById[formData.serviceId]?.name || "" : ""),
-    [formData.serviceId, serviceById]
-  );
-
-  // recalcular total al cambiar servicio o cantidad (solo si hay serviceId)
+  // Recalcular total al cambiar servicio seleccionado
   useEffect(() => {
     if (!formData.serviceId) return;
     const svc = serviceById[formData.serviceId];
@@ -193,43 +249,38 @@ export default function OrdersPage() {
     }));
   }, [formData.serviceId, formData.quantity, serviceById]);
 
-  // ---------- ordenar por fecha reciente ----------
-  const baseSortedOrders = useMemo(() => {
-    const arr = [...(orders || [])];
-    arr.sort(
+  /* ---------- HIDRATAR ÓRDENES ---------- */
+  const hydratedSortedOrders = useMemo(() => {
+    const hydrated = hydrateOrders(orders || [], clients || [], services || []);
+    hydrated.sort(
       (a, b) =>
         tsToMs(b.createdAt) - tsToMs(a.createdAt) ||
         tsToMs(b.startDate) - tsToMs(a.startDate)
     );
-    return arr;
-  }, [orders]);
+    return hydrated;
+  }, [orders, clients, services]);
 
-  // ---------- aplicar filtros y búsqueda ----------
+  /* ---------- aplicar filtros/búsqueda ---------- */
   const filteredSortedOrders = useMemo(() => {
-    const qText = normalizeText(searchText);
-    const qDigits = digits(searchText);
+    const qText = normalizeText(deferredSearch);
+    const qDigits = digits(deferredSearch);
 
     const fromMs = ymdToMs(dateFrom);
     const toMs = ymdToMs(dateTo);
-    // si el usuario coloca fecha fin, incluimos todo ese día sumando 1 día menos 1 ms
     const toMsInclusive = isNaN(toMs) ? NaN : toMs + 24 * 60 * 60 * 1000 - 1;
 
-    return baseSortedOrders.filter((o) => {
-      // filtro por estado
+    return hydratedSortedOrders.filter((o) => {
       if (statusFilter !== "todos" && o.status !== statusFilter) return false;
 
-      // filtro por fechas (por startDate)
       if (dateFrom || dateTo) {
         const oMs = ymdToMs(o.startDate);
         if (!isNaN(fromMs) && (isNaN(oMs) || oMs < fromMs)) return false;
         if (!isNaN(toMsInclusive) && (isNaN(oMs) || oMs > toMsInclusive)) return false;
       }
 
-      // búsqueda por cliente o celular
       if (qText || qDigits) {
-        const cli = clientById[o.clientId];
-        const name = normalizeText(cli?.name || "");
-        const phone = digits(cli?.phone || "");
+        const name = normalizeText(o._clientName || "");
+        const phone = digits(o._clientPhone || "");
         const matchText = qText ? name.includes(qText) : false;
         const matchPhone = qDigits ? phone.includes(qDigits) : false;
         if (!matchText && !matchPhone) return false;
@@ -237,169 +288,25 @@ export default function OrdersPage() {
 
       return true;
     });
-  }, [baseSortedOrders, statusFilter, dateFrom, dateTo, searchText, clientById]);
+  }, [hydratedSortedOrders, statusFilter, dateFrom, dateTo, deferredSearch]);
 
-  // ---------- submit ----------
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-
-    // Validaciones
-    if (!formData.clientName.trim()) return alert("Ingresa el nombre del cliente.");
-    if (!formData.clientPhone.trim()) return alert("Ingresa el teléfono.");
-    if (!formData.serviceId && !formData.serviceName.trim())
-      return alert("Selecciona un servicio o escribe uno nuevo.");
-    if (formData.total < 0) return alert("El total no puede ser negativo.");
-    if (formData.deposit < 0) return alert("El abono no puede ser negativo.");
-    if (formData.deposit > formData.total)
-      return alert("El abono no puede exceder el total.");
-    if (formData.quantity < 1) return alert("La cantidad mínima es 1.");
-
-    // Cliente
-    let clientId = "";
-    const existingClient = await findClientByPhone(formData.clientPhone);
-    if (existingClient) {
-      clientId = existingClient.id;
-    } else {
-      clientId = await createClient({
-        name: formData.clientName,
-        phone: formData.clientPhone,
-      });
-    }
-
-    // Crear / Actualizar
-    if (editingOrder) {
-      await updateOrder(editingOrder.id, {
-        clientId,
-        serviceId: formData.serviceId, // al editar mantenemos serviceId
-        startDate: formData.startDate,
-        expectedEndDate: formData.expectedEndDate,
-        details: formData.details,
-        deposit: editingOrder.deposit, // abonos solo vía pagos
-        total: formData.total,
-        balance: Math.max(0, Number(formData.total) - Number(editingOrder.deposit || 0)),
-        status: editingOrder.status,
-        quantity: formData.quantity,
-      });
-    } else {
-      let orderId = "";
-
-      if (formData.serviceId) {
-        // servicio existente
-        orderId = await createOrder({
-          clientId,
-          serviceId: formData.serviceId,
-          startDate: formData.startDate,
-          expectedEndDate: formData.expectedEndDate,
-          details: formData.details,
-          total: formData.total,
-          deposit: 0,
-          balance: formData.total,
-          status: "pendiente",
-          quantity: formData.quantity,
-        });
-      } else {
-        // servicio nuevo por nombre libre
-        orderId = await createOrderWithServiceResolution({
-          clientId,
-          serviceName: formData.serviceName.trim(),
-          startDate: formData.startDate,
-          expectedEndDate: formData.expectedEndDate,
-          details: formData.details,
-          total: formData.total,
-          deposit: 0,
-          balance: formData.total,
-          status: "pendiente",
-          quantity: formData.quantity,
-        });
-      }
-
-      if (formData.deposit > 0) {
-        await registerPayment(orderId, formData.deposit, "efectivo", "Abono inicial");
-      }
-    }
-
-    setIsDialogOpen(false);
-    resetForm();
-  };
-
-  const handleEdit = (order: Order) => {
-    const cli = clientById[order.clientId];
-    setEditingOrder(order);
-    setFormData({
-      clientName: cli?.name || "",
-      clientPhone: cli?.phone || "",
-      serviceId: order.serviceId,
-      serviceName: "", // al editar, usamos el servicio existente
-      startDate: order.startDate,
-      expectedEndDate: order.expectedEndDate,
-      details: order.details,
-      deposit: Number(order.deposit) || 0,
-      total: Number(order.total) || 0,
-      quantity: Number(order.quantity ?? 1),
-    });
-    const svcName = serviceById[order.serviceId]?.name || "";
-    setServiceQuery(svcName);
-    setIsDialogOpen(true);
-  };
-
-  const handleDelete = async (id: string) => {
-    if (!window.confirm("¿Eliminar esta orden?")) return;
-    await deleteOrder(id);
-  };
-
-  const getStatusStyle = (status: string) => {
-    switch (status) {
-      case "pendiente":
-        return "bg-yellow-100 text-yellow-800 px-2 py-1 rounded-full text-xs font-medium";
-      case "completado":
-        return "bg-green-100 text-green-800 px-2 py-1 rounded-full text-xs font-medium";
-      case "cancelado":
-        return "bg-red-100 text-red-800 px-2 py-1 rounded-full text-xs font-medium";
-      default:
-        return "";
-    }
-  };
-
-  // pagos por orden (solo para mostrar en el modal)
-  const paymentsByOrder = useMemo(() => {
-    const map = new Map<string, any[]>();
-    (payments || []).forEach((p: any) => {
-      const key = p.orderId || "";
-      if (!key) return;
-      if (!map.has(key)) map.set(key, []);
-      map.get(key)!.push(p);
-    });
-    for (const [, arr] of map) {
-      arr.sort((a, b) => tsToMs(b.createdAt) - tsToMs(a.createdAt));
-    }
-    return map;
-  }, [payments]);
-
-  // ---------- Generar PDF térmico (sin lista de pagos, diseño mejorado) ----------
-  const generateThermalPDF = (order: Order) => {
-    const client = clientById[order.clientId];
-    const service = serviceById[order.serviceId];
-
-    // Configuración base
-    const PAPER_WIDTH_MM = 80;     // cambia a 58 si tu rollo es de 58 mm
+  /* ---------- PDF térmico (opcional) ---------- */
+  const generateThermalPDF = (order: HydratedOrder) => {
+    const PAPER_WIDTH_MM = 80;
     const marginX = 5;
     const contentWidth = PAPER_WIDTH_MM - marginX * 2;
-
-    // Estilos
-    const line = 5;        // alto de línea
+    const line = 5;
     const fontTitle = 12;
     const fontNormal = 9;
     const fontSmall = 8;
 
-    // Prepara contenido con autoajuste de altura
-    const doc = new jsPDF({ unit: "mm", format: [PAPER_WIDTH_MM, 200] });
-
-    const split = (t: string) => doc.splitTextToSize(t, contentWidth);
+    const docTmp = new jsPDF({ unit: "mm", format: [PAPER_WIDTH_MM, 200] });
+    const split = (t: string) => docTmp.splitTextToSize(t, contentWidth);
 
     const infoBlocks = [
-      ...split(`Cliente: ${client?.name || "—"}`),
-      ...split(`Teléfono: ${client?.phone || "—"}`),
-      ...split(`Servicio: ${service?.name || (order as any)?.serviceName || "—"}`),
+      ...split(`Cliente: ${order._clientName || "—"}`),
+      ...split(`Teléfono: ${order._clientPhone || "—"}`),
+      ...split(`Servicio: ${order._serviceName || "—"}`),
       ...split(`Cantidad: ${order.quantity ?? 1}`),
       ...split(`Fecha inicio: ${order.startDate || "—"}`),
       ...split(`Fecha estimada: ${order.expectedEndDate || "—"}`),
@@ -407,24 +314,20 @@ export default function OrdersPage() {
       ...split(`Detalles: ${order.details || "—"}`),
     ];
 
-    // Cálculo de altura aproximada
-    const headH = line + 4; // para el título y separadores
+    const headH = line + 4;
     const bodyH = infoBlocks.length * line + 4;
-    const totalsH = line * 3 + 8; // tres filas + padding
+    const totalsH = line * 3 + 8;
     const footerH = line + 6;
     const estHeight = Math.max(120, headH + bodyH + totalsH + footerH);
 
-    // Re-crear doc con altura estimada
     const pdf = new jsPDF({ unit: "mm", format: [PAPER_WIDTH_MM, estHeight] });
 
-    // Helpers de dibujo
     const hr = (y: number) => {
       pdf.setDrawColor(180);
       pdf.line(marginX, y, PAPER_WIDTH_MM - marginX, y);
     };
 
     const kv = (label: string, value: string, y: number) => {
-      // etiqueta izquierda, valor derecha
       pdf.setFont("helvetica", "normal");
       pdf.text(label, marginX, y);
       pdf.setFont("helvetica", "bold");
@@ -432,9 +335,7 @@ export default function OrdersPage() {
     };
 
     const badge = (text: string, y: number) => {
-      // “chapita” del estado
       const padX = 3;
-      const padY = 1.5;
       pdf.setFontSize(8);
       pdf.setFont("helvetica", "bold");
       const w = pdf.getTextWidth(text) + padX * 2;
@@ -448,8 +349,6 @@ export default function OrdersPage() {
     };
 
     let y = 8;
-
-    // Título
     pdf.setFont("helvetica", "bold");
     pdf.setFontSize(fontTitle);
     pdf.text("ORDEN DE TRABAJO", PAPER_WIDTH_MM / 2, y, { align: "center" });
@@ -457,11 +356,9 @@ export default function OrdersPage() {
     hr(y);
     y += 2;
 
-    // Chapita con el estado
     badge(String(order.status || "pendiente").toUpperCase(), y + 2);
     y += 8;
 
-    // Info
     pdf.setFont("helvetica", "normal");
     pdf.setFontSize(fontNormal);
     infoBlocks.forEach((ln) => {
@@ -479,7 +376,6 @@ export default function OrdersPage() {
     hr(y);
     y += 2;
 
-    // Totales (bloque con borde)
     const boxX = marginX;
     const boxW = contentWidth;
     const boxH = line * 3 + 4;
@@ -497,8 +393,7 @@ export default function OrdersPage() {
     hr(y);
     y += line - 2;
 
-    // Footer
-    pdf.setFontSize(fontSmall);
+    pdf.setFontSize(8);
     pdf.setFont("helvetica", "normal");
     pdf.text(
       `ID: ${order.id} • Generado: ${new Date().toLocaleString("es-BO")}`,
@@ -507,25 +402,186 @@ export default function OrdersPage() {
       { align: "center" }
     );
 
-    // Descargar
     pdf.save(`orden_${order.id || "sin_id"}.pdf`);
   };
 
-  // Toggle al hacer clic en el chip de estado
-  const handleToggleStatus = async (order: Order) => {
-    if (togglingStatusId) return; // evita doble clic mientras guarda
-    const newStatus = nextStatus(order.status);
+  /* ---------- cambiar estado desde la fila ---------- */
+  const handleChangeStatus = async (order: HydratedOrder, newStatus: Order["status"]) => {
+    if (statusChangingId) return;
     try {
-      setTogglingStatusId(order.id);
+      setStatusChangingId(order.id);
       await updateOrder(order.id, { status: newStatus });
-      // updateOrder ya refresca la lista (getOrders dentro del hook)
     } catch (err) {
       console.error("No se pudo cambiar el estado:", err);
       alert("No se pudo cambiar el estado. Intenta de nuevo.");
     } finally {
-      setTogglingStatusId(null);
+      setStatusChangingId(null);
     }
   };
+
+  /* ---------- submit ---------- */
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (submitLockRef.current || isSubmitting) return;
+
+    submitLockRef.current = true;
+    setIsSubmitting(true);
+
+    const invalidate = (msg: string) => {
+      alert(msg);
+      submitLockRef.current = false;
+      setIsSubmitting(false);
+      return false;
+    };
+
+    // Validaciones
+    if (!formData.clientName.trim()) return invalidate("Ingresa el nombre del cliente.");
+    if (!formData.clientPhone.trim()) return invalidate("Ingresa el teléfono.");
+    if (!formData.serviceId && !formData.serviceName.trim())
+      return invalidate("Selecciona un servicio o escribe uno nuevo.");
+    if (formData.total < 0) return invalidate("El total no puede ser negativo.");
+    if (formData.deposit < 0) return invalidate("El abono no puede ser negativo.");
+    if (formData.deposit > formData.total) return invalidate("El abono no puede exceder el total.");
+    if (formData.quantity < 1) return invalidate("La cantidad mínima es 1.");
+
+    try {
+      // Cliente
+      let clientId = "";
+      const existingClient = await findClientByPhone(formData.clientPhone);
+      if (existingClient) {
+        clientId = existingClient.id;
+      } else {
+        clientId = await createClient({
+          name: formData.clientName,
+          phone: formData.clientPhone,
+        });
+      }
+
+      // Crear / Actualizar
+      if (editingOrder) {
+        await updateOrder(editingOrder.id, {
+          clientId,
+          serviceId: formData.serviceId,
+          startDate: formData.startDate,
+          expectedEndDate: formData.expectedEndDate,
+          details: formData.details,
+          deposit: editingOrder.deposit, // abonos solo vía pagos
+          total: formData.total,
+          balance: Math.max(0, Number(formData.total) - Number(editingOrder.deposit || 0)),
+          status: editingOrder.status,
+          quantity: formData.quantity,
+        });
+      } else {
+        let orderId = "";
+
+        if (formData.serviceId) {
+          // servicio existente
+          orderId = await createOrder({
+            clientId,
+            serviceId: formData.serviceId,
+            startDate: formData.startDate,
+            expectedEndDate: formData.expectedEndDate,
+            details: formData.details,
+            total: formData.total,
+            deposit: 0,
+            balance: formData.total,
+            status: "pendiente",
+            quantity: formData.quantity,
+          });
+        } else {
+          // servicio nuevo por nombre libre
+          orderId = await createOrderWithServiceResolution({
+            clientId,
+            serviceName: formData.serviceName.trim(),
+            startDate: formData.startDate,
+            expectedEndDate: formData.expectedEndDate,
+            details: formData.details,
+            total: formData.total,
+            deposit: 0,
+            balance: formData.total,
+            status: "pendiente",
+            quantity: formData.quantity,
+          });
+        }
+
+        // Abono inicial (si corresponde)
+        if (formData.deposit > 0) {
+          await registerPayment(orderId, formData.deposit, "efectivo", "Abono inicial");
+          // 🔁 Refresco inmediato por si hay latencia en onSnapshot
+          await getOrders();
+        }
+      }
+
+      setIsDialogOpen(false);
+      setEditingOrder(null);
+      setFormData({
+        clientName: "",
+        clientPhone: "",
+        serviceId: "",
+        serviceName: "",
+        startDate: new Date().toISOString().split("T")[0],
+        expectedEndDate: "",
+        details: "",
+        deposit: 0,
+        total: 0,
+        quantity: 1,
+      });
+      setServiceQuery("");
+    } catch (err) {
+      console.error("Error al guardar la orden:", err);
+      alert("No se pudo guardar la orden. Intenta de nuevo.");
+    } finally {
+      submitLockRef.current = false;
+      setIsSubmitting(false);
+    }
+  };
+
+  /* ---------- acciones fila ---------- */
+  const handleEdit = (order: HydratedOrder) => {
+    setEditingOrder(order);
+    setFormData({
+      clientName: order._clientName || "",
+      clientPhone: order._clientPhone || "",
+      serviceId: order.serviceId,
+      serviceName: "",
+      startDate: order.startDate,
+      expectedEndDate: order.expectedEndDate,
+      details: order.details,
+      deposit: Number(order.deposit) || 0,
+      total: Number(order.total) || 0,
+      quantity: Number(order.quantity ?? 1),
+    });
+    setServiceQuery(order._serviceName || "");
+    setIsDialogOpen(true);
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!window.confirm("¿Eliminar esta orden?")) return;
+    await deleteOrder(id);
+  };
+
+  /* ---------- pagos por orden (en detalles) ---------- */
+  const paymentsByOrder = useMemo(() => {
+    const map = new Map<string, any[]>();
+    (payments || []).forEach((p: any) => {
+      const key = p.orderId || "";
+      if (!key) return;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(p);
+    });
+    for (const [, arr] of map) {
+      arr.sort((a, b) => tsToMs(b.createdAt) - tsToMs(a.createdAt));
+    }
+    return map;
+  }, [payments]);
+
+  /* ---------- servicios filtrados ---------- */
+  const filteredServices = useMemo(() => {
+    const q = normalizeText(serviceQuery);
+    if (q.length < 2) return [];
+    return services.filter((s) => normalizeText(s.name).includes(q));
+  }, [serviceQuery, services]);
 
   return (
     <div className="space-y-6">
@@ -538,7 +594,22 @@ export default function OrdersPage() {
 
         <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
           <DialogTrigger asChild>
-            <Button onClick={resetForm}>
+            <Button onClick={() => {
+              setEditingOrder(null);
+              setFormData({
+                clientName: "",
+                clientPhone: "",
+                serviceId: "",
+                serviceName: "",
+                startDate: new Date().toISOString().split("T")[0],
+                expectedEndDate: "",
+                details: "",
+                deposit: 0,
+                total: 0,
+                quantity: 1,
+              });
+              setServiceQuery("");
+            }}>
               <Plus className="mr-2 h-4 w-4" />
               Nueva Orden
             </Button>
@@ -555,20 +626,18 @@ export default function OrdersPage() {
                   <Label>Nombre del cliente</Label>
                   <Input
                     value={formData.clientName}
-                    onChange={(e) =>
-                      setFormData({ ...formData, clientName: e.target.value })
-                    }
+                    onChange={(e) => setFormData({ ...formData, clientName: e.target.value })}
                     required
+                    disabled={isSubmitting}
                   />
                 </div>
                 <div>
                   <Label>Teléfono</Label>
                   <Input
                     value={formData.clientPhone}
-                    onChange={(e) =>
-                      setFormData({ ...formData, clientPhone: e.target.value })
-                    }
+                    onChange={(e) => setFormData({ ...formData, clientPhone: e.target.value })}
                     required
+                    disabled={isSubmitting}
                   />
                 </div>
               </div>
@@ -576,25 +645,22 @@ export default function OrdersPage() {
               {/* Servicio + buscador / texto libre */}
               <div>
                 <Label>Servicio</Label>
-                <div className="rounded-lg border">
+                <div className={`rounded-lg border ${isSubmitting ? "opacity-75 pointer-events-none" : ""}`}>
                   <Command shouldFilter={false}>
                     <CommandInput
                       placeholder="Buscar o escribir servicio..."
-                      value={
-                        formData.serviceId
-                          ? selectedServiceName
-                          : serviceQuery || formData.serviceName
-                      }
+                      value={formData.serviceId ? (serviceById[formData.serviceId]?.name || "") : serviceQuery || formData.serviceName}
                       onValueChange={(v) => {
                         setServiceQuery(v);
                         setFormData((fd) => ({
                           ...fd,
-                          serviceId: "",      // si escribe, limpiamos selección
-                          serviceName: v,     // guardamos nombre libre
-                          total: fd.serviceId ? 0 : fd.total, // si estaba seleccionado, resetea total
+                          serviceId: "",
+                          serviceName: v,
+                          total: fd.serviceId ? 0 : fd.total,
                           deposit: fd.serviceId ? 0 : fd.deposit,
                         }));
                       }}
+                      disabled={isSubmitting}
                     />
                     <CommandList>
                       {!formData.serviceId && (serviceQuery.trim().length < 2) ? (
@@ -633,9 +699,7 @@ export default function OrdersPage() {
                               className="flex justify-between"
                             >
                               <span>{service.name}</span>
-                              <span className="text-muted-foreground">
-                                {fmtBs(service.price)}
-                              </span>
+                              <span className="text-muted-foreground">{fmtBs(service.price)}</span>
                             </CommandItem>
                           ))}
                         </CommandGroup>
@@ -646,7 +710,7 @@ export default function OrdersPage() {
                   {formData.serviceId ? (
                     <div className="flex items-center justify-between px-3 py-2 border-t text-sm text-muted-foreground">
                       <span>
-                        Seleccionado: <b>{selectedServiceName || "—"}</b>
+                        Seleccionado: <b>{serviceById[formData.serviceId]?.name || "—"}</b>
                       </span>
                       <button
                         type="button"
@@ -661,6 +725,7 @@ export default function OrdersPage() {
                           }));
                           setServiceQuery("");
                         }}
+                        disabled={isSubmitting}
                       >
                         Cambiar
                       </button>
@@ -686,6 +751,7 @@ export default function OrdersPage() {
                     })
                   }
                   min={1}
+                  disabled={isSubmitting}
                 />
               </div>
 
@@ -694,9 +760,8 @@ export default function OrdersPage() {
                 <Label>Detalles adicionales</Label>
                 <Textarea
                   value={formData.details}
-                  onChange={(e) =>
-                    setFormData({ ...formData, details: e.target.value })
-                  }
+                  onChange={(e) => setFormData({ ...formData, details: e.target.value })}
+                  disabled={isSubmitting}
                 />
               </div>
 
@@ -707,9 +772,8 @@ export default function OrdersPage() {
                   <Input
                     type="date"
                     value={formData.startDate}
-                    onChange={(e) =>
-                      setFormData({ ...formData, startDate: e.target.value })
-                    }
+                    onChange={(e) => setFormData({ ...formData, startDate: e.target.value })}
+                    disabled={isSubmitting}
                   />
                 </div>
                 <div>
@@ -717,12 +781,8 @@ export default function OrdersPage() {
                   <Input
                     type="date"
                     value={formData.expectedEndDate}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        expectedEndDate: e.target.value,
-                      })
-                    }
+                    onChange={(e) => setFormData({ ...formData, expectedEndDate: e.target.value })}
+                    disabled={isSubmitting}
                   />
                 </div>
               </div>
@@ -734,13 +794,9 @@ export default function OrdersPage() {
                   <Input
                     type="number"
                     value={formData.total}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        total: Number(e.target.value || 0),
-                      })
-                    }
+                    onChange={(e) => setFormData({ ...formData, total: Number(e.target.value || 0) })}
                     min={0}
+                    disabled={isSubmitting}
                   />
                 </div>
 
@@ -749,14 +805,9 @@ export default function OrdersPage() {
                   <Input
                     type="number"
                     value={formData.deposit}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        deposit: Number(e.target.value || 0),
-                      })
-                    }
+                    onChange={(e) => setFormData({ ...formData, deposit: Number(e.target.value || 0) })}
                     min={0}
-                    disabled={!!editingOrder}
+                    disabled={!!editingOrder || isSubmitting}
                   />
                   {!!editingOrder && (
                     <p className="text-xs text-muted-foreground mt-1">
@@ -770,8 +821,7 @@ export default function OrdersPage() {
                   <Input
                     value={Math.max(
                       0,
-                      Number(formData.total) -
-                      Number(editingOrder ? editingOrder.deposit : formData.deposit)
+                      Number(formData.total) - Number(editingOrder ? editingOrder.deposit : formData.deposit)
                     )}
                     disabled
                   />
@@ -784,12 +834,8 @@ export default function OrdersPage() {
                   <Label>Estado</Label>
                   <Select
                     value={editingOrder.status}
-                    onValueChange={(value) =>
-                      setEditingOrder({
-                        ...editingOrder,
-                        status: value as Order["status"],
-                      })
-                    }
+                    onValueChange={(value) => setEditingOrder({ ...editingOrder, status: value as Order["status"] })}
+                    disabled={isSubmitting}
                   >
                     <SelectTrigger>
                       <SelectValue />
@@ -803,8 +849,20 @@ export default function OrdersPage() {
                 </div>
               )}
 
-              <Button type="submit" className="w-full">
-                {editingOrder ? "Actualizar orden" : "Crear orden"}
+              <Button
+                type="submit"
+                className="w-full"
+                disabled={isSubmitting}
+                aria-busy={isSubmitting}
+              >
+                {isSubmitting ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    {editingOrder ? "Actualizando..." : "Creando..."}
+                  </>
+                ) : (
+                  editingOrder ? "Actualizar orden" : "Crear orden"
+                )}
               </Button>
             </form>
           </DialogContent>
@@ -883,87 +941,30 @@ export default function OrdersPage() {
         ) : (
           <Table>
             <TableHeader>
-              <TableRow>
-                <TableHead>Cliente</TableHead>
-                <TableHead>Trabajo</TableHead>
-                <TableHead>Cantidad</TableHead>
-                <TableHead>Total</TableHead>
-                <TableHead>Abono</TableHead>
-                <TableHead>Saldo</TableHead>
-                <TableHead>Estado</TableHead>
-                <TableHead>Acciones</TableHead>
+              <TableRow className="bg-gradient-to-b from-blue-800 to-sky-950">
+                <TableHead className="text-white">Cliente</TableHead>
+                <TableHead className="text-white">Trabajo</TableHead>
+                <TableHead className="text-white">Cantidad</TableHead>
+                <TableHead className="text-white">Total</TableHead>
+                <TableHead className="text-white">Abono</TableHead>
+                <TableHead className="text-white">Saldo</TableHead>
+                <TableHead className="text-white">Estado</TableHead>
+                <TableHead className="text-white">Acciones</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filteredSortedOrders.map((order) => {
-                const client = clientById[order.clientId];
-                const service = serviceById[order.serviceId];
-                const isSaving = togglingStatusId === order.id;
+              {filteredSortedOrders.map((o) => (
+                <OrderRow
+                  key={o.id}
+                  order={o}
+                  onView={(ord) => setViewingOrder(ord)}
+                  onEdit={(ord) => handleEdit(ord)}
+                  onDelete={handleDelete}
+                  onChangeStatus={handleChangeStatus}
+                  isChangingStatus={statusChangingId === o.id}
+                />
+              ))}
 
-                return (
-                  <TableRow key={order.id}>
-                    <TableCell>
-                      <div className="flex flex-col">
-                        <span>{client?.name || "—"}</span>
-                        <span className="text-xs text-muted-foreground">{client?.phone || "—"}</span>
-                      </div>
-                    </TableCell>
-                    <TableCell>{service?.name || "—"}</TableCell>
-                    <TableCell>{order.quantity ?? 1}</TableCell>
-                    <TableCell>{fmtBs(order.total)}</TableCell>
-                    <TableCell>{fmtBs(order.deposit)}</TableCell>
-                    <TableCell>{fmtBs(order.balance)}</TableCell>
-                    <TableCell>
-                      <span
-                        role="button"
-                        tabIndex={0}
-                        title="Cambiar estado"
-                        onClick={() => handleToggleStatus(order)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") handleToggleStatus(order);
-                        }}
-                        className={[
-                          getStatusStyle(order.status),
-                          "inline-flex items-center cursor-pointer select-none transition",
-                          "hover:opacity-80 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary/50",
-                          isSaving ? "opacity-50 pointer-events-none" : "",
-                        ].join(" ")}
-                      >
-                        {order.status}
-                      </span>
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap flex gap-1">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => setViewingOrder(order)} // 👁️ ver detalles
-                        aria-label="Ver detalles"
-                        title="Ver detalles"
-                      >
-                        <Eye className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => handleEdit(order)}
-                        aria-label="Editar"
-                        title="Editar"
-                      >
-                        <Pencil className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => handleDelete(order.id)}
-                        aria-label="Eliminar"
-                        title="Eliminar"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
               {filteredSortedOrders.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={8} className="text-center">
@@ -976,7 +977,7 @@ export default function OrdersPage() {
         )}
       </div>
 
-      {/* Modal de detalles (incluye botón PDF; la lista de pagos solo se ve aquí, NO se imprime) */}
+      {/* Modal de detalles */}
       <Dialog open={!!viewingOrder} onOpenChange={() => setViewingOrder(null)}>
         <DialogContent className="max-w-2xl">
           <DialogHeader className="flex flex-row items-center justify-between">
@@ -996,13 +997,12 @@ export default function OrdersPage() {
           </DialogHeader>
 
           {viewingOrder && (
-            <div className="space-y-6">
-              {/* Info básica */}
-              <div className="grid grid-cols-2 gap-4 text-sm">
+            <div className="space-y-6 text-sm">
+              <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <p><b>Cliente:</b> {clientById[viewingOrder.clientId]?.name || "—"}</p>
-                  <p><b>Teléfono:</b> {clientById[viewingOrder.clientId]?.phone || "—"}</p>
-                  <p><b>Servicio:</b> {serviceById[viewingOrder.serviceId]?.name || "—"}</p>
+                  <p><b>Cliente:</b> {viewingOrder._clientName || "—"}</p>
+                  <p><b>Teléfono:</b> {viewingOrder._clientPhone || "—"}</p>
+                  <p><b>Servicio:</b> {viewingOrder._serviceName || "—"}</p>
                   <p><b>Cantidad:</b> {viewingOrder.quantity ?? 1}</p>
                 </div>
                 <div>
@@ -1016,14 +1016,13 @@ export default function OrdersPage() {
                 </div>
               </div>
 
-              {/* Totales */}
-              <div className="grid grid-cols-3 gap-4 text-sm">
+              <div className="grid grid-cols-3 gap-4">
                 <div className="p-3 rounded-lg border bg-muted/30">
                   <p className="text-xs text-muted-foreground">Total</p>
                   <p className="text-lg font-semibold">{fmtBs(viewingOrder.total)}</p>
                 </div>
                 <div className="p-3 rounded-lg border bg-muted/30">
-                  <p className="text-xs text-muted-foreground">Abonos (en orden)</p>
+                  <p className="text-xs text-muted-foreground">Abonos</p>
                   <p className="text-lg font-semibold">{fmtBs(viewingOrder.deposit)}</p>
                 </div>
                 <div className="p-3 rounded-lg border bg-muted/30">
@@ -1032,7 +1031,6 @@ export default function OrdersPage() {
                 </div>
               </div>
 
-              {/* Pagos visibles en modal (no en PDF) */}
               <div>
                 <h3 className="text-base font-medium mb-2">Pagos registrados</h3>
                 {(() => {
@@ -1052,9 +1050,13 @@ export default function OrdersPage() {
                           {list.length > 0 ? (
                             list.map((p: any) => (
                               <TableRow key={p.id}>
-                                <TableCell>{fmtDate(p.createdAt)}</TableCell>
-                                <TableCell className="capitalize">{p.method || "—"}</TableCell>
-                                <TableCell className="text-muted-foreground">{p.note || "—"}</TableCell>
+                                <TableCell>
+                                  {new Date(
+                                    (p.createdAt?.seconds ?? 0) * 1000
+                                  ).toLocaleString("es-BO")}
+                                </TableCell>
+                                <TableCell className="capitalize">{p.paymentMethod || "—"}</TableCell>
+                                <TableCell className="text-muted-foreground">{p.notes || "—"}</TableCell>
                                 <TableCell className="text-right">{fmtBs(p.amount)}</TableCell>
                               </TableRow>
                             ))

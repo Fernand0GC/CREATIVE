@@ -1,131 +1,99 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { db } from "@/firebase";
 import {
-    collection,
     addDoc,
+    collection,
     getDocs,
-    updateDoc,
-    deleteDoc,
-    doc,
+    onSnapshot,
     orderBy,
-    serverTimestamp,
     query,
+    serverTimestamp,
     where,
-    limit,
-    DocumentReference,
 } from "firebase/firestore";
-import type { Service } from "@/types/service";
-import { toDate } from "@/utils/toDate";
 
-type ServiceWithDates = Service & {
-    createdAtDate: Date | null;
-    updatedAtDate?: Date | null;
+/** Ajusta este tipo si tu schema tiene más campos */
+export type Service = {
+    id: string;
+    name: string;
+    price?: number | null;
+    createdAt?: any;
 };
 
-/** Normaliza nombre para evitar duplicados por mayúsculas/acentos/espacios */
-export const normalizeName = (name: string): string =>
-    (name || "")
-        .trim()
-        .toLocaleLowerCase()
-        .normalize("NFD")
-        .replace(/\p{Diacritic}/gu, "");
-
 /**
- * Busca un servicio por nombre normalizado y, si no existe, lo crea.
- * Devuelve { ref, id, name } del servicio definitivo.
+ * Busca por nombre exacto y si no existe, lo crea.
+ * Si quieres case-insensitive, podemos guardar también nameLower y consultar por ahí.
  */
 export async function getOrCreateServiceByName(
-    rawName: string,
-    opts?: { defaultPrice?: number | null; extra?: Partial<Service> }
-): Promise<{ ref: DocumentReference; id: string; name: string }> {
-    const servicesCol = collection(db, "services");
-    const name = (rawName || "").trim();
-    if (!name) throw new Error("El nombre del servicio está vacío.");
-
-    const norm = normalizeName(name);
-
-    // Buscar coincidencia exacta por nombre normalizado
-    const q = query(servicesCol, where("normalizedName", "==", norm), limit(1));
+    name: string,
+    opts?: { defaultPrice?: number | null }
+): Promise<{ id: string; created: boolean }> {
+    const col = collection(db, "services");
+    const q = query(col, where("name", "==", name));
     const snap = await getDocs(q);
 
     if (!snap.empty) {
-        const docSnap = snap.docs[0];
-        const data = docSnap.data() as any;
-        return { ref: docSnap.ref, id: docSnap.id, name: data?.name || name };
+        return { id: snap.docs[0].id, created: false };
     }
 
-    // Crear nuevo servicio
-    const docRef = await addDoc(servicesCol, {
+    const ref = await addDoc(col, {
         name,
-        normalizedName: norm,
-        price: typeof opts?.defaultPrice === "number" ? opts.defaultPrice : null,
-        active: true,
-        ...opts?.extra,
+        price: opts?.defaultPrice ?? null,
         createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
     });
 
-    return { ref: docRef, id: docRef.id, name };
+    return { id: ref.id, created: true };
 }
 
-export const useServices = () => {
-    const [services, setServices] = useState<ServiceWithDates[]>([]);
+export function useServices() {
+    const [services, setServices] = useState<Service[]>([]);
     const [loading, setLoading] = useState(true);
 
-    const servicesCol = collection(db, "services");
+    const col = collection(db, "services");
 
-    const getServices = async () => {
+    /** Carga puntual (ya no imprescindible si usas onSnapshot) */
+    const getServices = useCallback(async () => {
         setLoading(true);
         try {
-            const snap = await getDocs(query(servicesCol, orderBy("createdAt", "desc")));
-            const data = snap.docs.map((d) => {
-                const raw = { id: d.id, ...(d.data() as any) } as Service & { normalizedName?: string };
-                return {
-                    ...raw,
-                    createdAtDate: toDate((raw as any).createdAt),
-                    updatedAtDate: toDate((raw as any).updatedAt),
-                } as ServiceWithDates;
-            });
-            setServices(data);
-        } catch (error) {
-            console.error("Error al obtener servicios:", error);
+            const snap = await getDocs(query(col, orderBy("name", "asc")));
+            setServices(snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })));
+        } catch (e) {
+            console.error("getServices error:", e);
         } finally {
             setLoading(false);
         }
-    };
+    }, [col]);
 
-    const createService = async (serviceData: Omit<Service, "id" | "createdAt">) => {
-        const name = (serviceData.name || "").trim();
-        await addDoc(servicesCol, {
-            ...serviceData,
-            name,
-            normalizedName: normalizeName(name),
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-        });
-        await getServices();
-    };
-
-    const updateService = async (id: string, updates: Partial<Service>) => {
-        const patch: Record<string, any> = { ...updates, updatedAt: serverTimestamp() };
-        if (typeof updates.name === "string") {
-            patch.name = updates.name.trim();
-            patch.normalizedName = normalizeName(updates.name);
-        }
-        await updateDoc(doc(servicesCol, id), patch);
-        await getServices();
-    };
-
-    const deleteService = async (id: string) => {
-        await deleteDoc(doc(servicesCol, id));
-        setServices((prev) => prev.filter((s) => s.id !== id));
-    };
-
+    /** ✅ Suscripción en tiempo real: la columna “Trabajo” se actualiza al instante. */
     useEffect(() => {
-        void getServices();
-    }, []);
+        const qy = query(col, orderBy("name", "asc"));
+        const unsub = onSnapshot(
+            qy,
+            (snap) => {
+                setServices(snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })));
+                setLoading(false);
+            },
+            (err) => {
+                console.error("onSnapshot(services) error:", err);
+                setLoading(false);
+            }
+        );
+        return () => unsub();
+    }, [col]);
 
-    return { services, loading, getServices, createService, updateService, deleteService };
-};
+    /** Crear servicio directo (opcional) */
+    const createService = useCallback(
+        async (name: string, price?: number | null) => {
+            const ref = await addDoc(col, {
+                name,
+                price: price ?? null,
+                createdAt: serverTimestamp(),
+            });
+            return ref.id;
+        },
+        [col]
+    );
+
+    return { services, loading, getServices, createService };
+}
 
 export default useServices;

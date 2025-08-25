@@ -9,13 +9,15 @@ import {
     serverTimestamp,
     where,
     Timestamp,
+    deleteDoc,
+    doc,
 } from "firebase/firestore";
 
 export type JournalType = "ingreso" | "egreso";
 
 export interface JournalEntry {
     id?: string;
-    type: JournalType;        // ingreso | egreso (¡solo estos dos!)
+    type: JournalType;        // ingreso | egreso
     amount: number;
     concept: string;
     date: Date | Timestamp;
@@ -24,7 +26,7 @@ export interface JournalEntry {
     notes?: string | null;
 }
 
-const _toDate = (v: any): Date | null =>
+export const _toDate = (v: any): Date | null =>
     v?.toDate?.() ?? (isNaN(new Date(v as any).getTime()) ? null : new Date(v));
 
 export function useJournal() {
@@ -84,19 +86,43 @@ export function useJournal() {
         [getEntries]
     );
 
+    /** Eliminar una entrada manual (ingreso o egreso) del diario */
+    const deleteEntry = useCallback(
+        async (id: string) => {
+            try {
+                await deleteDoc(doc(col, id));
+                await getEntries();
+            } catch (e) {
+                console.error("Error deleteEntry(journal):", e);
+                throw e;
+            }
+        },
+        [getEntries]
+    );
+
     /** Cierre de día */
     const closeDay = useCallback(
         async (data: {
             date: Date;
-            ingresos: Array<{ source: "payment" | "manual"; amount: number; concept: string; orderId?: string | null; orderName?: string | null; paymentId?: string | null; journalId?: string | null; }>;
-            egresos: Array<{ amount: number; concept: string; journalId?: string | null; }>;
+            ingresos: Array<{
+                source: "payment" | "manual";
+                amount: number;
+                concept: string;
+                orderId?: string | null;
+                orderName?: string | null;
+                paymentId?: string | null;
+                journalId?: string | null;
+            }>;
+            egresos: Array<{ amount: number; concept: string; journalId?: string | null }>;
             totals: { ingresos: number; egresos: number; neto: number };
         }) => {
             try {
                 await addDoc(closuresCol, {
-                    date: Timestamp.fromDate(new Date(data.date.getFullYear(), data.date.getMonth(), data.date.getDate())),
-                    ingresos: data.ingresos.map(i => ({ ...i, amount: Number(i.amount || 0) })),
-                    egresos: data.egresos.map(e => ({ ...e, amount: Number(e.amount || 0) })),
+                    date: Timestamp.fromDate(
+                        new Date(data.date.getFullYear(), data.date.getMonth(), data.date.getDate())
+                    ),
+                    ingresos: data.ingresos.map((i) => ({ ...i, amount: Number(i.amount || 0) })),
+                    egresos: data.egresos.map((e) => ({ ...e, amount: Number(e.amount || 0) })),
                     totals: {
                         ingresos: Number(data.totals.ingresos || 0),
                         egresos: Number(data.totals.egresos || 0),
@@ -117,7 +143,8 @@ export function useJournal() {
     }, [getEntries]);
 
     const totals = useMemo(() => {
-        let ingresos = 0, egresos = 0;
+        let ingresos = 0,
+            egresos = 0;
         for (const e of entries) {
             const n = Number((e as any).amount || 0);
             if (e.type === "egreso") egresos += n;
@@ -126,7 +153,7 @@ export function useJournal() {
         return { ingresos, egresos, neto: ingresos - egresos };
     }, [entries]);
 
-    return { entries, loading, addEntry, getEntries, totals, _toDate, closeDay };
+    return { entries, loading, addEntry, deleteEntry, getEntries, totals, _toDate, closeDay };
 }
 
 export default useJournal;

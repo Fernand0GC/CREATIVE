@@ -43,6 +43,7 @@ export const usePayments = () => {
         }
     };
 
+    // Órdenes con saldo pendiente real (balance > 0)
     const getPendingPayments = async () => {
         const q = query(ordersCol, where("balance", ">", 0));
         const snapshot = await getDocs(q);
@@ -53,7 +54,7 @@ export const usePayments = () => {
      * Registra un pago y actualiza la orden en una sola transacción.
      * - Suma amount a deposit
      * - Recalcula balance = total - deposit
-     * - Cambia status a "completado" si balance llega a 0
+     * - Cambia status a "completado" si balance llega a 0 (si no, "pendiente")
      * Retorna el ID del pago creado.
      */
     const registerPayment = async (
@@ -87,7 +88,7 @@ export const usePayments = () => {
                 amount: Number(amount),
                 paymentMethod: method,
                 notes: notes ?? "",
-                date: serverTimestamp(),       // 👈 NUEVO: fecha del pago
+                date: serverTimestamp(),       // fecha del pago
                 createdAt: serverTimestamp(),  // marca de creación técnica
             });
 
@@ -124,7 +125,7 @@ export const usePayments = () => {
             amount: Number(amount),
             paymentMethod: method,
             notes: notes ?? "",
-            date: serverTimestamp(),       // 👈 NUEVO
+            date: serverTimestamp(),
             createdAt: serverTimestamp(),
         });
 
@@ -135,6 +136,7 @@ export const usePayments = () => {
     /**
      * Recalcula el balance de una orden, por si necesitas
      * sincronizar manualmente luego de imports/bulk ops.
+     * Status SIEMPRE derivado de balance.
      */
     const recalcOrderFromPayments = async (orderId: string) => {
         const orderRef = doc(ordersCol, orderId);
